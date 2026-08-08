@@ -85,17 +85,24 @@ def reply_stream(ws, req_id, content, stream_id=None, finish=True):
 # ========== 多媒体资源解密 ==========
 def decrypt_media(encrypted_data, aeskey):
     """解密企业微信多媒体资源
-    算法：AES-256-CBC，PKCS#7填充
+    算法：AES-256-CBC
     IV：aeskey 前16字节
     aeskey 是 Base64 编码的，需先解码为 32 字节原始密钥
+    注意：企微图片加密不使用标准PKCS7 padding，unpad可能失败，
+    此时直接返回解密后的原始数据（图像格式自带结束标记，多余padding不影响）
     """
     # 补齐 Base64 padding（企微 aeskey 可能缺少 = 填充）
     padded_key = aeskey + '=' * (4 - len(aeskey) % 4) if len(aeskey) % 4 else aeskey
     key = base64.b64decode(padded_key)
     iv = key[:16]
     cipher = AES.new(key, AES.MODE_CBC, iv)
-    decrypted = unpad(cipher.decrypt(encrypted_data), AES.block_size)
-    return decrypted
+    decrypted_raw = cipher.decrypt(encrypted_data)
+    # 尝试PKCS7 unpad，失败则直接用原始解密数据
+    try:
+        return unpad(decrypted_raw, AES.block_size)
+    except Exception:
+        logger.warning("PKCS7 unpad失败，使用原始解密数据（企微非标准padding）")
+        return decrypted_raw
 
 
 def download_and_decrypt_media(url, aeskey):
