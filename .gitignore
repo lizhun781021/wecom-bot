@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+*.log
+
+# Images (用户隐私)
+images/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
