@@ -740,8 +740,19 @@ def on_message(ws, message):
             deliver_ws_response(req_id, {"media_id": media_id, "errcode": errcode, "errmsg": errmsg})
             return
 
-        # 无cmd的响应（订阅/心跳的响应都是这种格式）
+        # 无cmd的响应（订阅/心跳/上传素材的响应都可能是这种格式）
         if cmd == "" and errcode == 0:
+            # 先检查是否有 pending request 在等待这个 req_id（上传素材的响应cmd可能为空）
+            with _ws_lock:
+                is_pending = req_id in _ws_response_events
+            if is_pending:
+                # 投递完整响应数据，让等待线程能取到 upload_id / media_id 等字段
+                body_data = msg.get("body", {})
+                body_data["errcode"] = errcode
+                deliver_ws_response(req_id, body_data)
+                logger.info(f"已投递无cmd响应给pending request: req_id={req_id}")
+                return
+
             subscribe_req_id = getattr(ws, 'subscribe_req_id', None)
             if req_id == subscribe_req_id:
                 logger.info("✓ 订阅成功！机器人已上线")
