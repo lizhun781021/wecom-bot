@@ -10,6 +10,10 @@ images/
 # macOS
 .DS_Store
 
+# Runtime
+pending_files.json
+name_cache.json
+
 # IDE
 .vscode/
 .idea/

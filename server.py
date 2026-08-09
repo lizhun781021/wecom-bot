@@ -25,6 +25,11 @@ import websocket  # pip install websocket-client
 
 import config
 
+# ========== WebSocket线程安全发送锁 ==========
+# websocket-client的send方法虽然有内部锁，但on_message回调和子线程同时send仍可能出问题
+# 所有ws.send()调用都通过send_ws_message，受此锁保护
+_send_lock = threading.Lock()
+
 # ========== 日志配置 ==========
 LOG_DIR = os.path.dirname(os.path.abspath(__file__))
 logging.basicConfig(
@@ -52,7 +57,7 @@ def gen_req_id():
 
 
 def send_ws_message(ws, cmd, body, req_id=None):
-    """发送 WebSocket 消息"""
+    """发送 WebSocket 消息（线程安全）"""
     if req_id is None:
         req_id = gen_req_id()
     msg = {
@@ -61,7 +66,8 @@ def send_ws_message(ws, cmd, body, req_id=None):
         "body": body
     }
     try:
-        ws.send(json.dumps(msg))
+        with _send_lock:
+            ws.send(json.dumps(msg))
         logger.info(f"发送 [{cmd}] req_id={req_id}")
     except Exception as e:
         logger.error(f"发送消息失败: {e}")
@@ -165,12 +171,115 @@ def deliver_ws_response(req_id, data):
     return False
 
 
+# ========== 企微通讯录API：userid → 姓名自动查询 ==========
+
+# access_token 缓存
+_access_token = None
+_access_token_expire = 0
+_token_lock = threading.Lock()
+
+# 本地姓名缓存文件
+NAME_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "name_cache.json")
+_name_cache = {}  # {userid: name}
+
+
+def _load_name_cache():
+    """启动时从本地文件加载姓名缓存"""
+    global _name_cache
+    try:
+        if os.path.exists(NAME_CACHE_FILE):
+            with open(NAME_CACHE_FILE, 'r', encoding='utf-8') as f:
+                _name_cache = json.load(f)
+            logger.info(f"已加载姓名缓存: {len(_name_cache)} 条")
+    except Exception as e:
+        logger.warning(f"加载姓名缓存失败: {e}")
+        _name_cache = {}
+
+
+def _save_name_cache():
+    """保存姓名缓存到本地文件"""
+    try:
+        with open(NAME_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(_name_cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"保存姓名缓存失败: {e}")
+
+
+def _get_access_token():
+    """获取企微access_token，带缓存（有效期2小时）"""
+    global _access_token, _access_token_expire
+    with _token_lock:
+        now = time.time()
+        # 提前5分钟刷新，避免临界过期
+        if _access_token and now < _access_token_expire - 300:
+            return _access_token
+        try:
+            url = "https://qyapi.weixin.qq.com/cgi-bin/gettoken"
+            params = {
+                "corpid": config.CORP_ID,
+                "corpsecret": config.CORP_SECRET
+            }
+            resp = requests.get(url, params=params, timeout=10)
+            data = resp.json()
+            if data.get("errcode") != 0:
+                logger.error(f"获取access_token失败: {data}")
+                return None
+            _access_token = data["access_token"]
+            _access_token_expire = now + data.get("expires_in", 7200)
+            logger.info("access_token 获取成功")
+            return _access_token
+        except Exception as e:
+            logger.error(f"获取access_token异常: {e}")
+            return None
+
+
+def _query_userid_name(userid):
+    """通过企微通讯录API查询userid对应的姓名"""
+    token = _get_access_token()
+    if not token:
+        return None
+    try:
+        url = f"https://qyapi.weixin.qq.com/cgi-bin/user/get"
+        params = {
+            "access_token": token,
+            "userid": userid
+        }
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+        if data.get("errcode") == 0:
+            name = data.get("name", "")
+            if name:
+                logger.info(f"通讯录查询成功: {userid} → {name}")
+                return name
+        elif data.get("errcode") == 60011:
+            logger.warning(f"无权查看用户 {userid}（不在应用可见范围内）")
+        else:
+            logger.warning(f"通讯录查询失败: {userid}, {data}")
+        return None
+    except Exception as e:
+        logger.error(f"通讯录查询异常: {e}")
+        return None
+
+
 def get_user_name(userid):
-    """将企微userid转换为姓名"""
-    return config.WECOM_USER_MAP.get(userid, userid)
+    """将企微userid转换为姓名：手动映射 > 本地缓存 > API查询 > 降级显示原始ID"""
+    # 1. 手动映射优先
+    if userid in config.WECOM_USER_MAP:
+        return config.WECOM_USER_MAP[userid]
+    # 2. 本地缓存
+    if userid in _name_cache:
+        return _name_cache[userid]
+    # 3. 调API查询
+    name = _query_userid_name(userid)
+    if name:
+        _name_cache[userid] = name
+        _save_name_cache()
+        return name
+    # 4. 查不到，降级显示原始ID
+    return userid
 
 
-def call_teleagent(prompt, timeout=600, session_title=None):
+def call_teleagent(prompt, timeout=1800, session_title=None):
     """通过 OpenAI 兼容代理调用 TeleAgent AI 能力，返回回复文本"""
     try:
         headers = {
@@ -234,18 +343,19 @@ def build_prompt(file_paths, text_content, from_user):
     return "\n".join(parts)
 
 
-def extract_file_path(text):
-    """从回复文本中提取FILE_PATH:后面的路径"""
+def extract_file_paths(text):
+    """从回复文本中提取所有FILE_PATH:后面的路径，返回列表"""
     import re
-    match = re.search(r'FILE_PATH:(.+?)(?:\n|$)', text)
-    if match:
+    paths = []
+    for match in re.finditer(r'FILE_PATH:(.+?)(?:\n|$)', text):
         path = match.group(1).strip()
         # 去掉可能的前后引号
         path = path.strip('"').strip("'")
         if os.path.exists(path):
-            return path
-        logger.warning(f"FILE_PATH路径不存在: {path}")
-    return None
+            paths.append(path)
+        else:
+            logger.warning(f"FILE_PATH路径不存在: {path}")
+    return paths
 
 
 def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user):
@@ -265,7 +375,7 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     logger.info(f"开始调用TeleAgent, 调用人={user_name}, 有文件={has_files}")
 
     # 调用TeleAgent代理
-    result = call_teleagent(prompt, timeout=600, session_title=session_title)
+    result = call_teleagent(prompt, timeout=1800, session_title=session_title)
 
     if not result:
         reply_stream(
@@ -276,11 +386,11 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
         logger.error("TeleAgent调用失败，已回复错误消息")
         return
 
-    # 尝试提取文件路径
-    file_path = extract_file_path(result)
+    # 尝试提取所有文件路径
+    file_paths = extract_file_paths(result)
 
-    if file_path:
-        # 从回复中去掉FILE_PATH行，保留摘要
+    if file_paths:
+        # 从回复中去掉所有FILE_PATH行，保留摘要
         text_reply = re.sub(r'FILE_PATH:.+?(?:\n|$)', '', result).strip()
         if not text_reply:
             text_reply = "配餐分析文档已生成，请查看下方文件。"
@@ -291,15 +401,20 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
         reply_stream(ws, req_id, text_reply, stream_id=stream_id, finish=True)
         logger.info(f"已回复文字摘要, 长度={len(text_reply)}")
 
-        # 再上传并发送文件
-        logger.info(f"开始上传文件到企微: {file_path}")
-        media_id = upload_media_sync(ws, file_path, media_type="file")
-        if media_id:
-            send_file_message(ws, req_id, media_id, os.path.basename(file_path))
-            logger.info(f"已发送文件到群: {os.path.basename(file_path)}")
-        else:
-            reply_stream(ws, req_id, "文档已生成但发送失败，路径：" + file_path)
-            logger.error(f"文件上传失败: {file_path}")
+        # 逐个上传并发送文件
+        for fp in file_paths:
+            logger.info(f"开始上传文件到企微: {fp}")
+            media_id = upload_media_sync(ws, fp, media_type="file")
+            if media_id:
+                send_file_message(ws, req_id, media_id, os.path.basename(fp))
+                logger.info(f"已发送文件到群: {os.path.basename(fp)}")
+                # 文件间间隔0.5秒，避免企微限流
+                if fp != file_paths[-1]:
+                    time.sleep(0.5)
+            else:
+                reply_stream(ws, req_id, "文档已生成但发送失败，路径：" + fp)
+                logger.error(f"文件上传失败: {fp}")
+        logger.info(f"共发送{len(file_paths)}个文件")
     else:
         # 没有文件，直接回复文本
         if len(result) > 3000:
@@ -422,7 +537,8 @@ def upload_media_sync(ws, file_path, media_type="file"):
             "total_chunks": total_chunks,
             "md5": md5_hash
         }, init_req_id)
-        init_data = wait_for_ws_response(init_req_id, timeout=30)
+        init_data = wait_for_ws_response(init_req_id, timeout=180)
+        logger.info(f"上传初始化响应数据: {json.dumps(init_data, ensure_ascii=False)[:500]}")
         upload_id = init_data.get("upload_id", "")
         if not upload_id:
             logger.error(f"上传初始化失败，未获得upload_id: {init_data}")
@@ -443,7 +559,7 @@ def upload_media_sync(ws, file_path, media_type="file"):
                     "chunk_index": chunk_index,
                     "base64_data": base64.b64encode(chunk).decode('utf-8')
                 }, chunk_req_id)
-                chunk_data = wait_for_ws_response(chunk_req_id, timeout=30)
+                chunk_data = wait_for_ws_response(chunk_req_id, timeout=180)
                 if chunk_data.get("errcode", -1) != 0:
                     logger.error(f"分片{chunk_index}上传失败: {chunk_data}")
                     return None
@@ -456,7 +572,7 @@ def upload_media_sync(ws, file_path, media_type="file"):
         send_ws_message(ws, "aibot_upload_media_finish", {
             "upload_id": upload_id
         }, finish_req_id)
-        finish_data = wait_for_ws_response(finish_req_id, timeout=30)
+        finish_data = wait_for_ws_response(finish_req_id, timeout=180)
         media_id = finish_data.get("media_id", "")
         if media_id:
             logger.info(f"素材上传完成: media_id={media_id}, filename={filename}")
@@ -487,6 +603,110 @@ def upload_media(ws, file_path, media_type="image"):
     return None
 
 
+# ========== 待发文件队列 ==========
+# 当有文件需要发送到群聊但没有活跃的req_id时，先存队列
+# 下次收到群消息时自动发送
+PENDING_FILES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_files.json")
+PENDING_FILES = []  # [{"path": "/abs/path", "summary": "描述"}]
+PENDING_FILES_LOCK = threading.Lock()
+
+def _load_pending_files():
+    """从本地JSON文件加载待发文件（支持跨进程：外部写入文件，bot读取发送）"""
+    global PENDING_FILES
+    with PENDING_FILES_LOCK:
+        try:
+            if os.path.exists(PENDING_FILES_FILE):
+                with open(PENDING_FILES_FILE, 'r', encoding='utf-8') as f:
+                    PENDING_FILES = json.load(f)
+                if PENDING_FILES:
+                    logger.info(f"已加载待发文件队列: {len(PENDING_FILES)} 个文件")
+                    # 不清空文件，等发送成功后再清
+                else:
+                    PENDING_FILES = []
+        except Exception as e:
+            logger.error(f"加载待发文件异常: {e}")
+            PENDING_FILES = []
+
+def _clear_pending_files_file():
+    """清空待发文件JSON"""
+    try:
+        with open(PENDING_FILES_FILE, 'w', encoding='utf-8') as f:
+            json.dump([], f)
+        logger.info("已清空待发文件队列文件")
+    except Exception as e:
+        logger.error(f"清空待发文件异常: {e}")
+
+def add_pending_files(file_paths, summary=""):
+    """添加待发文件到队列（同时写入JSON文件供运行中的bot读取）"""
+    with PENDING_FILES_LOCK:
+        for fp in file_paths:
+            if os.path.exists(fp):
+                PENDING_FILES.append({"path": fp, "summary": summary})
+                logger.info(f"已添加待发文件: {fp}")
+            else:
+                logger.error(f"待发文件不存在，跳过: {fp}")
+        # 写入JSON文件
+        try:
+            with open(PENDING_FILES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(PENDING_FILES, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"写入待发文件JSON异常: {e}")
+        logger.info(f"待发文件队列长度={len(PENDING_FILES)}")
+
+def flush_pending_files(ws, req_id):
+    """检查待发文件队列，如有则启动异步上传线程发送，不阻塞on_message回调
+    返回True表示有待发文件（已启动异步上传），False表示没有"""
+    # 先从文件重新加载（可能有外部写入的新文件）
+    _load_pending_files()
+
+    files_to_send = []
+    with PENDING_FILES_LOCK:
+        if not PENDING_FILES:
+            return False
+        files_to_send = PENDING_FILES[:]
+    # 不清空队列！等上传成功后再清
+
+    logger.info(f"发现{len(files_to_send)}个待发文件，启动异步上传线程...")
+    # 先回复一条消息告知用户
+    reply_stream(ws, req_id, f"检测到{len(files_to_send)}个待发文件，正在上传中，请稍候...", finish=True)
+    
+    # 启动独立线程执行文件上传（不阻塞on_message回调）
+    thread = threading.Thread(
+        target=_upload_and_send_files_async,
+        args=(ws, req_id, files_to_send),
+        daemon=True
+    )
+    thread.start()
+    return True
+
+
+def _upload_and_send_files_async(ws, req_id, files_to_send):
+    """在独立线程中执行文件上传和发送（不阻塞WebSocket接收循环）
+    所有 ws.send() 调用通过 send_lock 保护，避免和 on_message 中的 send 冲突"""
+    success_count = 0
+    for i, item in enumerate(files_to_send):
+        fp = item["path"]
+        logger.info(f"上传待发文件[{i+1}/{len(files_to_send)}]: {fp}")
+        media_id = upload_media_sync(ws, fp, media_type="file")
+        if media_id:
+            send_file_message(ws, req_id, media_id, os.path.basename(fp))
+            logger.info(f"已发送待发文件: {os.path.basename(fp)}")
+            success_count += 1
+            if i < len(files_to_send) - 1:
+                time.sleep(1)
+        else:
+            logger.error(f"待发文件上传失败: {fp}")
+            reply_stream(ws, req_id, f"文档上传失败: {os.path.basename(fp)}")
+    
+    logger.info(f"文件上传完成: 成功{success_count}/{len(files_to_send)}")
+    
+    # 发送完成后清空文件队列
+    if success_count > 0:
+        with PENDING_FILES_LOCK:
+            PENDING_FILES.clear()
+        _clear_pending_files_file()
+
+
 # ========== 消息处理 ==========
 def handle_text_message(ws, msg, req_id):
     """处理文字消息：统一走TeleAgent代理回复"""
@@ -496,6 +716,11 @@ def handle_text_message(ws, msg, req_id):
     chattype = body.get("chattype", "single")
 
     logger.info(f"收到文字消息: from={from_user}, chattype={chattype}, content={text_content[:50]}")
+
+    # 先检查待发文件队列
+    if flush_pending_files(ws, req_id):
+        logger.info("待发文件已发送，跳过当前消息处理")
+        return
 
     # 先回复收到
     stream_id = reply_stream(ws, req_id, "收到，正在处理...", finish=False)
@@ -518,6 +743,11 @@ def handle_image_message(ws, msg, req_id):
     aeskey = image_info.get("aeskey", "")
 
     logger.info(f"收到图片消息: from={from_user}, chattype={chattype}")
+
+    # 先检查待发文件队列
+    if flush_pending_files(ws, req_id):
+        logger.info("待发文件已发送，跳过图片消息处理")
+        return
 
     # 1. 下载并解密图片
     decrypted = download_and_decrypt_media(url, aeskey)
@@ -572,7 +802,7 @@ def handle_file_message(ws, msg, req_id):
         reply_stream(ws, req_id, "文件下载失败", stream_id=stream_id, finish=True)
         return
 
-    save_dir = config.IMAGE_SAVE_DIR
+    save_dir = config.FILE_SAVE_DIR
     os.makedirs(save_dir, exist_ok=True)
     # 保留原始扩展名
     safe_name = filename.replace('/', '_').replace(' ', '_')
@@ -612,7 +842,7 @@ def handle_voice_message(ws, msg, req_id):
         reply_stream(ws, req_id, "语音下载失败", stream_id=stream_id, finish=True)
         return
 
-    save_dir = config.IMAGE_SAVE_DIR
+    save_dir = config.VOICE_SAVE_DIR
     os.makedirs(save_dir, exist_ok=True)
     # 语音文件通常为amr格式
     filepath = os.path.join(save_dir, f"voice_{int(time.time())}_{from_user}.amr")
@@ -651,7 +881,7 @@ def handle_video_message(ws, msg, req_id):
         reply_stream(ws, req_id, "视频下载失败", stream_id=stream_id, finish=True)
         return
 
-    save_dir = config.IMAGE_SAVE_DIR
+    save_dir = config.VIDEO_SAVE_DIR
     os.makedirs(save_dir, exist_ok=True)
     filepath = os.path.join(save_dir, f"video_{int(time.time())}_{from_user}.mp4")
     with open(filepath, 'wb') as f:
@@ -678,6 +908,11 @@ def handle_mixed_message(ws, msg, req_id):
     logger.info(f"收到图文混排消息: from={from_user}, chattype={chattype}, items={len(msg_items)}")
     logger.info(f"mixed消息原文: {json.dumps(body, ensure_ascii=False)[:1000]}")
 
+    # 先检查待发文件队列
+    if flush_pending_files(ws, req_id):
+        logger.info("待发文件已发送，跳过mixed消息处理")
+        return
+
     # 先回复收到
     # 根据items预判消息类型
     has_image = any(item.get("msgtype") == "image" for item in msg_items)
@@ -695,9 +930,11 @@ def handle_mixed_message(ws, msg, req_id):
     # 解析 msg_item 数组
     text_parts = []
     file_paths = []  # [(path, type)]
-    save_dir = config.IMAGE_SAVE_DIR
-    os.makedirs(save_dir, exist_ok=True)
     timestamp = int(time.time())
+    img_dir = config.IMAGE_SAVE_DIR; os.makedirs(img_dir, exist_ok=True)
+    file_dir = config.FILE_SAVE_DIR; os.makedirs(file_dir, exist_ok=True)
+    voice_dir = config.VOICE_SAVE_DIR; os.makedirs(voice_dir, exist_ok=True)
+    video_dir = config.VIDEO_SAVE_DIR; os.makedirs(video_dir, exist_ok=True)
 
     for i, item in enumerate(msg_items):
         item_type = item.get("msgtype", "")
@@ -711,7 +948,7 @@ def handle_mixed_message(ws, msg, req_id):
                 decrypted = download_and_decrypt_media(url, aeskey)
                 if decrypted:
                     img_filename = f"mixed_{timestamp}_{from_user}_{i}.jpg"
-                    img_path = os.path.join(save_dir, img_filename)
+                    img_path = os.path.join(img_dir, img_filename)
                     with open(img_path, 'wb') as f:
                         f.write(decrypted)
                     file_paths.append((img_path, 'image'))
@@ -727,7 +964,7 @@ def handle_mixed_message(ws, msg, req_id):
                 decrypted = download_and_decrypt_media(url, aeskey)
                 if decrypted:
                     safe_name = filename.replace('/', '_').replace(' ', '_')
-                    fpath = os.path.join(save_dir, f"mixed_{timestamp}_{safe_name}")
+                    fpath = os.path.join(file_dir, f"mixed_{timestamp}_{safe_name}")
                     with open(fpath, 'wb') as f:
                         f.write(decrypted)
                     file_paths.append((fpath, 'file'))
@@ -741,7 +978,7 @@ def handle_mixed_message(ws, msg, req_id):
             if url:
                 decrypted = download_and_decrypt_media(url, aeskey)
                 if decrypted:
-                    vpath = os.path.join(save_dir, f"mixed_{timestamp}_voice_{i}.amr")
+                    vpath = os.path.join(voice_dir, f"mixed_{timestamp}_voice_{i}.amr")
                     with open(vpath, 'wb') as f:
                         f.write(decrypted)
                     file_paths.append((vpath, 'voice'))
@@ -755,7 +992,7 @@ def handle_mixed_message(ws, msg, req_id):
             if url:
                 decrypted = download_and_decrypt_media(url, aeskey)
                 if decrypted:
-                    vpath = os.path.join(save_dir, f"mixed_{timestamp}_video_{i}.mp4")
+                    vpath = os.path.join(video_dir, f"mixed_{timestamp}_video_{i}.mp4")
                     with open(vpath, 'wb') as f:
                         f.write(decrypted)
                     file_paths.append((vpath, 'video'))
@@ -801,7 +1038,9 @@ def on_message(ws, message):
         body = msg.get("body", {})
 
         logger.info(f"收到消息: cmd={cmd}, errcode={errcode}, req_id={req_id}")
-        logger.debug(f"消息原文: {message[:500]}")
+        # 记录完整原始消息用于调试上传响应问题
+        if not cmd and req_id:
+            logger.info(f"无cmd响应完整原文: {message[:1000]}")
 
         # 有cmd的消息：按类型处理
         if cmd == "aibot_msg_callback":
@@ -882,6 +1121,7 @@ def on_message(ws, message):
                 # 投递完整响应数据，让等待线程能取到 upload_id / media_id 等字段
                 body_data = msg.get("body", {})
                 body_data["errcode"] = errcode
+                logger.info(f"上传响应body内容: {json.dumps(body_data, ensure_ascii=False)[:500]}")
                 deliver_ws_response(req_id, body_data)
                 logger.info(f"已投递无cmd响应给pending request: req_id={req_id}")
                 return
@@ -936,7 +1176,8 @@ def start_heartbeat(ws):
                         "cmd": "ping",
                         "headers": {"req_id": ping_req_id}
                     }
-                    ws.send(json.dumps(ping_msg))
+                    with _send_lock:
+                        ws.send(json.dumps(ping_msg))
                     logger.debug("发送心跳 ping")
                 else:
                     logger.warning("WebSocket 未连接，停止心跳")
@@ -994,7 +1235,14 @@ if __name__ == '__main__':
     logger.info("=" * 50)
     logger.info("企业微信智能机器人 - 长连接模式")
     logger.info(f"BotID: {config.BOT_ID}")
-    logger.info(f"图片保存: {os.path.abspath(config.IMAGE_SAVE_DIR)}")
+    logger.info(f"文件保存: 图片={config.IMAGE_SAVE_DIR}")
+
+    # 加载本地姓名缓存
+    _load_name_cache()
+
+    # 加载待发文件队列
+    _load_pending_files()
+
     logger.info("=" * 50)
 
     # 主循环：断线自动重连
