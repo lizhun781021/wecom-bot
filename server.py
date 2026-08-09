@@ -205,14 +205,28 @@ def call_teleagent(prompt, timeout=600, session_title=None):
         return None
 
 
-def build_prompt(image_paths, text_content, from_user):
-    """构建prompt：图片给路径、文字原文转发，不加任何多余说明"""
+def build_prompt(file_paths, text_content, from_user):
+    """构建prompt：文件给路径、文字原文转发，不加任何多余说明
+    file_paths: [(path, type), type为'image'或'file'或'voice'或'video']
+    """
     parts = []
-    if image_paths:
-        parts.append(f"{from_user}在群聊中发送了图片，请用 image_understanding 工具查看：")
-        for i, path in enumerate(image_paths):
+    if file_paths:
+        image_paths = [p for p, t in file_paths if t == 'image']
+        other_paths = [(p, t) for p, t in file_paths if t != 'image']
+        if image_paths:
+            parts.append(f"{from_user}在群聊中发送了图片，请用 image_understanding 工具查看：")
+            for path in image_paths:
+                abs_path = os.path.abspath(path)
+                parts.append(abs_path)
+        for path, ftype in other_paths:
             abs_path = os.path.abspath(path)
-            parts.append(f"{abs_path}")
+            if ftype == 'voice':
+                parts.append(f"{from_user}在群聊中发送了语音录音文件，请用 offline_asr 技能转写并分析：")
+            elif ftype == 'video':
+                parts.append(f"{from_user}在群聊中发送了视频文件：")
+            else:
+                parts.append(f"{from_user}在群聊中发送了文件：")
+            parts.append(abs_path)
         if text_content:
             parts.append(f"\n{from_user}说：{text_content}")
     else:
@@ -234,18 +248,21 @@ def extract_file_path(text):
     return None
 
 
-def process_and_reply(ws, req_id, stream_id, image_paths, text_content, from_user):
-    """异步处理：调用TeleAgent代理 -> 回复群里（含文件发送）"""
+def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user):
+    """异步处理：调用TeleAgent代理 -> 回复群里（含文件发送）
+    file_paths: [(path, type), type为'image'/'file'/'voice'/'video']
+    """
     user_name = get_user_name(from_user)
 
-    # 构建prompt：图片路径+文字原文
-    prompt = build_prompt(image_paths, text_content, user_name)
+    # 构建prompt：文件路径+文字原文
+    prompt = build_prompt(file_paths, text_content, user_name)
 
     # 会话标题：姓名 | 技能 | 时间
     time_str = time.strftime("%H:%M")
     session_title = f"{user_name} | 河南标准化赋能 | {time_str}"
 
-    logger.info(f"开始调用TeleAgent, 调用人={user_name}, 有图片={bool(image_paths)}")
+    has_files = bool(file_paths)
+    logger.info(f"开始调用TeleAgent, 调用人={user_name}, 有文件={has_files}")
 
     # 调用TeleAgent代理
     result = call_teleagent(prompt, timeout=600, session_title=session_title)
@@ -530,14 +547,14 @@ def handle_image_message(ws, msg, req_id):
     # 3. 异步调用TeleAgent代理（含看图+配餐分析）
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [image_path], "", from_user),
+        args=(ws, req_id, stream_id, [(image_path, 'image')], "", from_user),
         daemon=True
     )
     thread.start()
 
 
 def handle_file_message(ws, msg, req_id):
-    """处理文件消息"""
+    """处理文件消息：下载解密 -> 走TeleAgent代理"""
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
     file_info = body.get("file", {})
@@ -547,34 +564,73 @@ def handle_file_message(ws, msg, req_id):
 
     logger.info(f"收到文件消息: from={from_user}, filename={filename}")
 
-    decrypted = download_and_decrypt_media(url, aeskey)
-    if decrypted:
-        save_dir = config.IMAGE_SAVE_DIR
-        os.makedirs(save_dir, exist_ok=True)
-        filepath = os.path.join(save_dir, f"file_{int(time.time())}_{filename}")
-        with open(filepath, 'wb') as f:
-            f.write(decrypted)
-        logger.info(f"文件已保存: {filepath}")
+    # 先回复收到
+    stream_id = reply_stream(ws, req_id, f"收到文件: {filename}，正在处理...", finish=False)
 
-        send_pushplus("企业微信收到文件", f"<p>发送者: {from_user}</p><p>文件: {filepath}</p>")
-        reply_stream(ws, req_id, f"文件已保存: {filename}")
-    else:
-        reply_stream(ws, req_id, "文件下载失败")
+    decrypted = download_and_decrypt_media(url, aeskey)
+    if not decrypted:
+        reply_stream(ws, req_id, "文件下载失败", stream_id=stream_id, finish=True)
+        return
+
+    save_dir = config.IMAGE_SAVE_DIR
+    os.makedirs(save_dir, exist_ok=True)
+    # 保留原始扩展名
+    safe_name = filename.replace('/', '_').replace(' ', '_')
+    filepath = os.path.join(save_dir, f"file_{int(time.time())}_{safe_name}")
+    with open(filepath, 'wb') as f:
+        f.write(decrypted)
+    logger.info(f"文件已保存: {filepath} ({len(decrypted)} bytes)")
+
+    # 异步调用TeleAgent
+    thread = threading.Thread(
+        target=process_and_reply,
+        args=(ws, req_id, stream_id, [(filepath, 'file')], "", from_user),
+        daemon=True
+    )
+    thread.start()
 
 
 def handle_voice_message(ws, msg, req_id):
-    """处理语音消息"""
+    """处理语音消息：下载解密 -> 走TeleAgent代理（offline_asr转写分析）"""
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
     voice_info = body.get("voice", {})
+    url = voice_info.get("url", "")
+    aeskey = voice_info.get("aeskey", "")
 
     logger.info(f"收到语音消息: from={from_user}")
 
-    reply_stream(ws, req_id, "收到语音消息")
+    if not url:
+        reply_stream(ws, req_id, "语音消息无下载URL")
+        return
+
+    # 先回复收到
+    stream_id = reply_stream(ws, req_id, "收到语音，正在转写分析...", finish=False)
+
+    decrypted = download_and_decrypt_media(url, aeskey)
+    if not decrypted:
+        reply_stream(ws, req_id, "语音下载失败", stream_id=stream_id, finish=True)
+        return
+
+    save_dir = config.IMAGE_SAVE_DIR
+    os.makedirs(save_dir, exist_ok=True)
+    # 语音文件通常为amr格式
+    filepath = os.path.join(save_dir, f"voice_{int(time.time())}_{from_user}.amr")
+    with open(filepath, 'wb') as f:
+        f.write(decrypted)
+    logger.info(f"语音已保存: {filepath} ({len(decrypted)} bytes)")
+
+    # 异步调用TeleAgent
+    thread = threading.Thread(
+        target=process_and_reply,
+        args=(ws, req_id, stream_id, [(filepath, 'voice')], "", from_user),
+        daemon=True
+    )
+    thread.start()
 
 
 def handle_video_message(ws, msg, req_id):
-    """处理视频消息"""
+    """处理视频消息：下载解密 -> 走TeleAgent代理"""
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
     video_info = body.get("video", {})
@@ -583,17 +639,32 @@ def handle_video_message(ws, msg, req_id):
 
     logger.info(f"收到视频消息: from={from_user}")
 
+    if not url:
+        reply_stream(ws, req_id, "视频消息无下载URL")
+        return
+
+    # 先回复收到
+    stream_id = reply_stream(ws, req_id, "收到视频，正在处理...", finish=False)
+
     decrypted = download_and_decrypt_media(url, aeskey)
-    if decrypted:
-        save_dir = config.IMAGE_SAVE_DIR
-        os.makedirs(save_dir, exist_ok=True)
-        filepath = os.path.join(save_dir, f"video_{int(time.time())}.mp4")
-        with open(filepath, 'wb') as f:
-            f.write(decrypted)
-        logger.info(f"视频已保存: {filepath}")
-        reply_stream(ws, req_id, "视频已保存到本地")
-    else:
-        reply_stream(ws, req_id, "视频下载失败")
+    if not decrypted:
+        reply_stream(ws, req_id, "视频下载失败", stream_id=stream_id, finish=True)
+        return
+
+    save_dir = config.IMAGE_SAVE_DIR
+    os.makedirs(save_dir, exist_ok=True)
+    filepath = os.path.join(save_dir, f"video_{int(time.time())}_{from_user}.mp4")
+    with open(filepath, 'wb') as f:
+        f.write(decrypted)
+    logger.info(f"视频已保存: {filepath} ({len(decrypted)} bytes)")
+
+    # 异步调用TeleAgent
+    thread = threading.Thread(
+        target=process_and_reply,
+        args=(ws, req_id, stream_id, [(filepath, 'video')], "", from_user),
+        daemon=True
+    )
+    thread.start()
 
 
 def handle_mixed_message(ws, msg, req_id):
@@ -608,11 +679,22 @@ def handle_mixed_message(ws, msg, req_id):
     logger.info(f"mixed消息原文: {json.dumps(body, ensure_ascii=False)[:1000]}")
 
     # 先回复收到
-    stream_id = reply_stream(ws, req_id, "收到图片，正在分析...", finish=False)
+    # 根据items预判消息类型
+    has_image = any(item.get("msgtype") == "image" for item in msg_items)
+    has_other = any(item.get("msgtype") in ("file", "voice", "video") for item in msg_items)
+    if has_image and has_other:
+        reply_text = "收到图文/文件，正在处理..."
+    elif has_image:
+        reply_text = "收到图片，正在分析..."
+    elif has_other:
+        reply_text = "收到文件，正在处理..."
+    else:
+        reply_text = "收到，正在处理..."
+    stream_id = reply_stream(ws, req_id, reply_text, finish=False)
 
     # 解析 msg_item 数组
     text_parts = []
-    image_paths = []
+    file_paths = []  # [(path, type)]
     save_dir = config.IMAGE_SAVE_DIR
     os.makedirs(save_dir, exist_ok=True)
     timestamp = int(time.time())
@@ -632,16 +714,60 @@ def handle_mixed_message(ws, msg, req_id):
                     img_path = os.path.join(save_dir, img_filename)
                     with open(img_path, 'wb') as f:
                         f.write(decrypted)
-                    image_paths.append(img_path)
+                    file_paths.append((img_path, 'image'))
                     logger.info(f"mixed图片已保存: {img_path} ({len(decrypted)} bytes)")
                 else:
                     logger.error(f"mixed图片下载失败: item {i}")
+        elif item_type == "file":
+            file_info = item.get("file", {})
+            url = file_info.get("url", "")
+            aeskey = file_info.get("aeskey", "")
+            filename = file_info.get("filename", f"unknown_{i}")
+            if url:
+                decrypted = download_and_decrypt_media(url, aeskey)
+                if decrypted:
+                    safe_name = filename.replace('/', '_').replace(' ', '_')
+                    fpath = os.path.join(save_dir, f"mixed_{timestamp}_{safe_name}")
+                    with open(fpath, 'wb') as f:
+                        f.write(decrypted)
+                    file_paths.append((fpath, 'file'))
+                    logger.info(f"mixed文件已保存: {fpath} ({len(decrypted)} bytes)")
+                else:
+                    logger.error(f"mixed文件下载失败: item {i}")
+        elif item_type == "voice":
+            voice_info = item.get("voice", {})
+            url = voice_info.get("url", "")
+            aeskey = voice_info.get("aeskey", "")
+            if url:
+                decrypted = download_and_decrypt_media(url, aeskey)
+                if decrypted:
+                    vpath = os.path.join(save_dir, f"mixed_{timestamp}_voice_{i}.amr")
+                    with open(vpath, 'wb') as f:
+                        f.write(decrypted)
+                    file_paths.append((vpath, 'voice'))
+                    logger.info(f"mixed语音已保存: {vpath} ({len(decrypted)} bytes)")
+                else:
+                    logger.error(f"mixed语音下载失败: item {i}")
+        elif item_type == "video":
+            video_info = item.get("video", {})
+            url = video_info.get("url", "")
+            aeskey = video_info.get("aeskey", "")
+            if url:
+                decrypted = download_and_decrypt_media(url, aeskey)
+                if decrypted:
+                    vpath = os.path.join(save_dir, f"mixed_{timestamp}_video_{i}.mp4")
+                    with open(vpath, 'wb') as f:
+                        f.write(decrypted)
+                    file_paths.append((vpath, 'video'))
+                    logger.info(f"mixed视频已保存: {vpath} ({len(decrypted)} bytes)")
+                else:
+                    logger.error(f"mixed视频下载失败: item {i}")
 
     # 异步调用TeleAgent代理 -> 回复群里
     text_content = " ".join(text_parts) if text_parts else ""
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, image_paths, text_content, from_user),
+        args=(ws, req_id, stream_id, file_paths, text_content, from_user),
         daemon=True
     )
     thread.start()
