@@ -1,4 +1,17 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: 'a71b7354-ee6c-4c17-ba44-d7fa0b44005e'
+  PropagateID: 'a71b7354-ee6c-4c17-ba44-d7fa0b44005e'
+  ReservedCode1: 'aeb45503-f5b7-49a4-a4b8-88b850236534'
+  ReservedCode2: 'aeb45503-f5b7-49a4-a4b8-88b850236534'
+---
+
 # 企微Python机器人（长连接模式）
+
+![version](https://img.shields.io/badge/version-1.0.0-blue)
 
 ## 简介
 企业微信群聊智能机器人，基于 WebSocket 长连接接收消息，无需域名/备案/回调服务器。
@@ -17,9 +30,23 @@
     ↓ （如有文件）上传文件 → file 类型消息发送到群
 ```
 
+## 版本管理
+
+本项目使用语义化版本号（`主版本.次版本.修订号`），通过 git tag 标记每个版本：
+
+| 版本 | 日期 | 说明 |
+|------|------|------|
+| v1.0.0 | 2026-08-09 | 首个正式版，支持群聊收图+AI配餐+文件发送全流程 |
+
+- 当前版本号见 [VERSION](VERSION) 文件
+- 完整更新日志见 [CHANGELOG.md](CHANGELOG.md)
+- 历史版本可通过 `git checkout v1.0.0` 回退
+
 ## 文件说明
 | 文件 | 说明 |
 |------|------|
+| `VERSION` | 当前版本号 |
+| `CHANGELOG.md` | 更新日志 |
 | `server.py` | 机器人主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传） |
 | `config.py` | 配置文件（机器人凭证、代理地址、用户ID→姓名映射、PushPlus） |
 | `requirements.txt` | Python 依赖 |
@@ -41,8 +68,8 @@ WECOM_USER_MAP = {       # 企微用户ID → 姓名映射（会话标题显示�
 - **企微长连接不支持 text 类型回复**，必须用 `stream` 类型（`aibot_respond_msg` + `msgtype=stream`）
 - **mixed 消息结构**：`body.mixed.msg_item[]`，每个 item 有 `msgtype`（text/image）
 - **图片 AES 解密**：aeskey 是 Base64 编码（43字节需补齐padding），AES-256-CBC，IV 为 key 前16字节
-- **文件上传**：三步同步流程（init→chunk→finish），用 Event 机制等待 WebSocket 异步响应
-- **超时设置**：看图+生成文档需较长时间，HTTP 超时设为 600 秒
+- **文件上传**：三步同步流程（init→chunk→finish），异步线程执行不阻塞消息接收，_send_lock保护线程安全
+- **超时设置**：看图+生成文档需较长时间，HTTP 超时设为 1800 秒（30分钟）
 
 ## launchd 服务
 - 服务名：`com.lizhun.wecom-bot`
