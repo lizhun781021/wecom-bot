@@ -17,3 +17,8 @@ name_cache.json
 # IDE
 .vscode/
 .idea/
+
+# Secrets (敏感信息，勿上传)
+config.py
+wecom-bot-stderr.log
+wecom-bot-stdout.log

@@ -24,6 +24,10 @@ from Crypto.Util.Padding import unpad
 import websocket  # pip install websocket-client
 
 import config
+import dashboard
+
+# ========== Dashboard 管理面板端口 ==========
+DASHBOARD_PORT = 8505
 
 # ========== WebSocket线程安全发送锁 ==========
 # websocket-client的send方法虽然有内部锁，但on_message回调和子线程同时send仍可能出问题
@@ -45,10 +49,24 @@ logger = logging.getLogger(__name__)
 # WebSocket 连接地址
 WS_URL = "wss://openws.work.weixin.qq.com"
 
-# 全局 WebSocket 连接
+# 全局 WebSocket 连接（线程安全引用：process_and_reply等子线程通过get_ws()获取最新连接）
 ws_app = None
+_ws_lock = threading.Lock()
 reconnect_count = 0
 MAX_RECONNECT = 100
+
+
+def get_ws():
+    """获取当前最新的WebSocket连接对象（线程安全）"""
+    with _ws_lock:
+        return ws_app
+
+
+def set_ws(ws):
+    """更新全局WebSocket连接引用（线程安全）"""
+    global ws_app
+    with _ws_lock:
+        ws_app = ws
 
 
 def gen_req_id():
@@ -57,7 +75,11 @@ def gen_req_id():
 
 
 def send_ws_message(ws, cmd, body, req_id=None):
-    """发送 WebSocket 消息（线程安全）"""
+    """发送 WebSocket 消息（线程安全，自动使用最新连接）"""
+    # 如果传入的ws已失效，尝试用最新的全局连接
+    current_ws = get_ws()
+    if current_ws and (not ws or not hasattr(ws, 'sock') or ws.sock is None or not ws.sock.connected):
+        ws = current_ws
     if req_id is None:
         req_id = gen_req_id()
     msg = {
@@ -67,10 +89,16 @@ def send_ws_message(ws, cmd, body, req_id=None):
     }
     try:
         with _send_lock:
-            ws.send(json.dumps(msg))
+            if ws and ws.sock and ws.sock.connected:
+                ws.send(json.dumps(msg))
+            else:
+                logger.error(f"WebSocket未连接，无法发送 [{cmd}]")
+                return None
         logger.info(f"发送 [{cmd}] req_id={req_id}")
     except Exception as e:
         logger.error(f"发送消息失败: {e}")
+        return None
+    return req_id
 
 
 def reply_stream(ws, req_id, content, stream_id=None, finish=True):
@@ -344,23 +372,34 @@ def build_prompt(file_paths, text_content, from_user):
 
 
 def extract_file_paths(text):
-    """从回复文本中提取所有FILE_PATH:后面的路径，返回列表"""
+    """从回复文本中提取所有FILE_PATH:后面的路径，返回列表。
+    正则匹配到合法文件扩展名(.pdf/.docx/.xlsx等)为止，避免尾随中文污染路径。
+    """
     import re
     paths = []
-    for match in re.finditer(r'FILE_PATH:(.+?)(?:\n|$)', text):
-        path = match.group(1).strip()
-        # 去掉可能的前后引号
-        path = path.strip('"').strip("'")
+    # 先尝试匹配带已知扩展名的路径（贪婪回溯会停在扩展名处，尾随中文不被捕获）
+    ext_pattern = r'FILE_PATH:\s*(\S+\.(?:pdf|docx|doc|xlsx|xls|pptx|ppt|txt|csv|png|jpg|jpeg|gif|bmp|zip|7z|mp4|mp3|wav|m4a|aac|flac|html|htm|json|md))'
+    for match in re.finditer(ext_pattern, text, re.IGNORECASE):
+        path = match.group(1).strip().strip('"').strip("'")
         if os.path.exists(path):
             paths.append(path)
         else:
-            logger.warning(f"FILE_PATH路径不存在: {path}")
+            logger.warning(f"FILE_PATH路径不存在(扩展名匹配): {path}")
+    # 兜底：旧方式（针对没有标准扩展名的路径）
+    if not paths:
+        for match in re.finditer(r'FILE_PATH:\s*([^\s\n]+)', text):
+            path = match.group(1).strip().rstrip('。，,：:').strip('"').strip("'")
+            if os.path.exists(path):
+                paths.append(path)
+            else:
+                logger.warning(f"FILE_PATH路径不存在(兜底): {path}")
     return paths
 
 
 def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user):
     """异步处理：调用TeleAgent代理 -> 回复群里（含文件发送）
     file_paths: [(path, type), type为'image'/'file'/'voice'/'video']
+    企微stream消息有10分钟超时限制，处理过程中每8分钟发一次心跳保活
     """
     user_name = get_user_name(from_user)
 
@@ -374,8 +413,40 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     has_files = bool(file_paths)
     logger.info(f"开始调用TeleAgent, 调用人={user_name}, 有文件={has_files}")
 
+    # 心跳保活线程：每8分钟更新stream消息，防止企微10分钟超时
+    heartbeat_stop = threading.Event()
+    heartbeat_count = [0]
+    def heartbeat():
+        while not heartbeat_stop.wait(480):  # 8分钟
+            if heartbeat_stop.is_set():
+                break
+            heartbeat_count[0] += 1
+            try:
+                reply_stream(ws, req_id, f"正在处理中，请稍候...({heartbeat_count[0]})",
+                             stream_id=stream_id, finish=False)
+                logger.info(f"心跳保活第{heartbeat_count[0]}次, stream_id={stream_id}")
+            except Exception as e:
+                logger.error(f"心跳保活发送失败: {e}")
+                break
+    hb_thread = threading.Thread(target=heartbeat, daemon=True)
+    hb_thread.start()
+
     # 调用TeleAgent代理
     result = call_teleagent(prompt, timeout=1800, session_title=session_title)
+
+    # 停止心跳
+    heartbeat_stop.set()
+
+    # 刷新ws引用：重连后旧ws失效，必须用最新的全局连接
+    ws = get_ws() or ws
+    if not ws or not hasattr(ws, 'sock') or ws.sock is None or not ws.sock.connected:
+        logger.error("process_and_reply: WebSocket已断开，无法回复和发送文件")
+        # 文件已生成但无法发送，写入待发队列
+        file_paths_from_result = extract_file_paths(result) if result else []
+        if file_paths_from_result:
+            add_pending_files(file_paths_from_result, summary="WebSocket断连期间生成")
+            logger.info(f"已将{len(file_paths_from_result)}个文件加入待发队列")
+        return
 
     if not result:
         reply_stream(
@@ -384,6 +455,7 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
             stream_id=stream_id, finish=True
         )
         logger.error("TeleAgent调用失败，已回复错误消息")
+        dashboard.update_message_status(0, "失败")
         return
 
     # 尝试提取所有文件路径
@@ -400,6 +472,9 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
             text_reply = text_reply[:3000] + "\n\n(摘要过长已截断，完整内容见下方文档)"
         reply_stream(ws, req_id, text_reply, stream_id=stream_id, finish=True)
         logger.info(f"已回复文字摘要, 长度={len(text_reply)}")
+        dashboard.update_message_status(0, "已回复+发文件")
+        with dashboard.BOT_STATUS_LOCK:
+            dashboard.BOT_STATUS["total_replies"] += 1
 
         # 逐个上传并发送文件
         for fp in file_paths:
@@ -421,6 +496,9 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
             result = result[:3000] + "\n\n(回复过长已截断)"
         reply_stream(ws, req_id, result, stream_id=stream_id, finish=True)
         logger.info(f"已回复群消息(纯文本), 长度={len(result)}")
+        dashboard.update_message_status(0, "已回复")
+        with dashboard.BOT_STATUS_LOCK:
+            dashboard.BOT_STATUS["total_replies"] += 1
 
 
 # ========== PushPlus 通知 ==========
@@ -652,6 +730,7 @@ def add_pending_files(file_paths, summary=""):
         except Exception as e:
             logger.error(f"写入待发文件JSON异常: {e}")
         logger.info(f"待发文件队列长度={len(PENDING_FILES)}")
+        dashboard.update_bot_status(pending_files=len(PENDING_FILES))
 
 def flush_pending_files(ws, req_id):
     """检查待发文件队列，如有则启动异步上传线程发送，不阻塞on_message回调
@@ -705,6 +784,7 @@ def _upload_and_send_files_async(ws, req_id, files_to_send):
         with PENDING_FILES_LOCK:
             PENDING_FILES.clear()
         _clear_pending_files_file()
+        dashboard.update_bot_status(pending_files=0)
 
 
 # ========== 消息处理 ==========
@@ -716,6 +796,8 @@ def handle_text_message(ws, msg, req_id):
     chattype = body.get("chattype", "single")
 
     logger.info(f"收到文字消息: from={from_user}, chattype={chattype}, content={text_content[:50]}")
+    user_name = get_user_name(from_user)
+    dashboard.add_message_record("text", user_name, text_content[:80], "处理中")
 
     # 先检查待发文件队列
     if flush_pending_files(ws, req_id):
@@ -743,6 +825,8 @@ def handle_image_message(ws, msg, req_id):
     aeskey = image_info.get("aeskey", "")
 
     logger.info(f"收到图片消息: from={from_user}, chattype={chattype}")
+    user_name = get_user_name(from_user)
+    dashboard.add_message_record("image", user_name, "图片消息", "处理中")
 
     # 先检查待发文件队列
     if flush_pending_files(ws, req_id):
@@ -793,6 +877,8 @@ def handle_file_message(ws, msg, req_id):
     filename = file_info.get("filename", "unknown_file")
 
     logger.info(f"收到文件消息: from={from_user}, filename={filename}")
+    user_name = get_user_name(from_user)
+    dashboard.add_message_record("file", user_name, f"文件: {filename}", "处理中")
 
     # 先回复收到
     stream_id = reply_stream(ws, req_id, f"收到文件: {filename}，正在处理...", finish=False)
@@ -829,6 +915,8 @@ def handle_voice_message(ws, msg, req_id):
     aeskey = voice_info.get("aeskey", "")
 
     logger.info(f"收到语音消息: from={from_user}")
+    user_name = get_user_name(from_user)
+    dashboard.add_message_record("voice", user_name, "语音消息", "处理中")
 
     if not url:
         reply_stream(ws, req_id, "语音消息无下载URL")
@@ -868,6 +956,8 @@ def handle_video_message(ws, msg, req_id):
     aeskey = video_info.get("aeskey", "")
 
     logger.info(f"收到视频消息: from={from_user}")
+    user_name = get_user_name(from_user)
+    dashboard.add_message_record("video", user_name, "视频消息", "处理中")
 
     if not url:
         reply_stream(ws, req_id, "视频消息无下载URL")
@@ -907,6 +997,11 @@ def handle_mixed_message(ws, msg, req_id):
 
     logger.info(f"收到图文混排消息: from={from_user}, chattype={chattype}, items={len(msg_items)}")
     logger.info(f"mixed消息原文: {json.dumps(body, ensure_ascii=False)[:1000]}")
+    user_name = get_user_name(from_user)
+    # 预览内容
+    text_parts_preview = [item.get("text", {}).get("content", "") for item in msg_items if item.get("msgtype") == "text"]
+    preview = " ".join(text_parts_preview)[:80] if text_parts_preview else f"{len(msg_items)}个附件"
+    dashboard.add_message_record("mixed", user_name, preview, "处理中")
 
     # 先检查待发文件队列
     if flush_pending_files(ws, req_id):
@@ -914,7 +1009,6 @@ def handle_mixed_message(ws, msg, req_id):
         return
 
     # 先回复收到
-    # 根据items预判消息类型
     has_image = any(item.get("msgtype") == "image" for item in msg_items)
     has_other = any(item.get("msgtype") in ("file", "voice", "video") for item in msg_items)
     if has_image and has_other:
@@ -1014,6 +1108,7 @@ def handle_mixed_message(ws, msg, req_id):
 def on_open(ws):
     """连接建立后发送订阅请求"""
     logger.info("WebSocket 连接已建立，发送订阅请求...")
+    dashboard.update_bot_status(online=True, subscribed=False, connect_time=time.time())
     req_id = gen_req_id()
     # 把订阅req_id存到ws对象上，避免跨线程全局变量问题
     ws.subscribe_req_id = req_id
@@ -1129,10 +1224,12 @@ def on_message(ws, message):
             subscribe_req_id = getattr(ws, 'subscribe_req_id', None)
             if req_id == subscribe_req_id:
                 logger.info("✓ 订阅成功！机器人已上线")
+                dashboard.update_bot_status(online=True, subscribed=True, connect_time=time.time())
                 if not heartbeat_running:
                     start_heartbeat(ws)
             else:
                 # 所有其他无cmd响应视为心跳响应
+                dashboard.update_bot_status(last_heartbeat=time.time())
                 logger.debug("心跳响应 OK")
             return
 
@@ -1145,12 +1242,15 @@ def on_message(ws, message):
 def on_error(ws, error):
     """WebSocket 错误"""
     logger.error(f"WebSocket 错误: {error}")
+    with dashboard.BOT_STATUS_LOCK:
+        dashboard.BOT_STATUS["total_errors"] += 1
 
 
 def on_close(ws, close_status_code, close_msg):
     """WebSocket 连接关闭"""
     global reconnect_count
     logger.warning(f"WebSocket 连接关闭: code={close_status_code}, msg={close_msg}")
+    dashboard.update_bot_status(online=False, subscribed=False)
     # 先停止心跳，防止旧线程干扰
     stop_heartbeat()
     # 自动重连
@@ -1206,19 +1306,19 @@ def schedule_reconnect():
 # ========== 主连接 ==========
 def connect_websocket():
     """建立 WebSocket 长连接"""
-    global ws_app
-
     logger.info(f"正在连接企业微信长连接: {WS_URL}")
 
-    ws_app = websocket.WebSocketApp(
+    new_ws = websocket.WebSocketApp(
         WS_URL,
         on_open=on_open,
         on_message=on_message,
         on_error=on_error,
         on_close=on_close
     )
+    # 更新全局ws引用（线程安全）
+    set_ws(new_ws)
 
-    ws_app.run_forever(
+    new_ws.run_forever(
         ping_interval=0,  # 不使用 websocket-client 内置 ping，我们自己控制
         ping_timeout=None,
         skip_utf8_validation=True
@@ -1236,6 +1336,16 @@ if __name__ == '__main__':
     logger.info("企业微信智能机器人 - 长连接模式")
     logger.info(f"BotID: {config.BOT_ID}")
     logger.info(f"文件保存: 图片={config.IMAGE_SAVE_DIR}")
+    logger.info(f"管理面板: http://127.0.0.1:{DASHBOARD_PORT}")
+
+    # 启动 Dashboard 管理面板（后台线程）
+    dashboard_thread = threading.Thread(
+        target=dashboard.run_dashboard,
+        args=(DASHBOARD_PORT,),
+        daemon=True
+    )
+    dashboard_thread.start()
+    logger.info(f"Dashboard 管理面板已启动（端口 {DASHBOARD_PORT}）")
 
     # 加载本地姓名缓存
     _load_name_cache()
@@ -1255,6 +1365,7 @@ if __name__ == '__main__':
         # run_forever 返回后，等待重连
         stop_heartbeat()
         reconnect_count += 1
+        dashboard.update_bot_status(reconnect_count=reconnect_count)
         if reconnect_count > MAX_RECONNECT:
             logger.error(f"重连次数超过上限({MAX_RECONNECT})，退出")
             break

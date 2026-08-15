@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'ae827575-8ae9-4cd3-9f1b-c827c3a9425d'
-  PropagateID: 'ae827575-8ae9-4cd3-9f1b-c827c3a9425d'
-  ReservedCode1: '350aa678-ee37-441a-9d6c-27cf2471df77'
-  ReservedCode2: '350aa678-ee37-441a-9d6c-27cf2471df77'
+  ProduceID: '52ac8d01-a97f-432b-a18c-a5347b07135b'
+  PropagateID: '52ac8d01-a97f-432b-a18c-a5347b07135b'
+  ReservedCode1: '9e32fffb-c5a4-443b-b5e8-3614c0aabda5'
+  ReservedCode2: '9e32fffb-c5a4-443b-b5e8-3614c0aabda5'
 ---
 
 # 更新日志
@@ -15,6 +15,30 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.1.0 (2026-08-16)
+
+新增主动推送群聊消息能力和 Web 管理面板，机器人从「单向接收回复」升级为「双向收发」。
+
+### 新增功能
+- **群机器人 Webhook 主动推送**（push.py）：支持向群聊推送文字、Markdown、图片、图文消息
+  - 命令行入口：`python push.py group "内容"` / `python push.py group_md "## 标题"` / `python push.py group_img /path/to/image.jpg`
+  - 应用消息 1v1 推送：`python push.py user <userid> "内容"`（需配置可信 IP，企业 >10 人受腾讯限制可能不可用）
+- **Web 管理面板**（dashboard.py，端口 8505）：
+  - 机器人运行状态监控（连接状态、最近消息、日志查看）
+  - 主动推送消息区域（浏览器直接发消息，支持群聊/个人、文字/Markdown/图片）
+  - REST API 接口 `POST /api/push`（target=group/user，msgtype=text/markdown/image）
+- **配置模板**（config_example.py）：脱敏样例，不含真实凭证，方便他人部署
+
+### 安全改进
+- config.py 移出 git 跟踪，加入 .gitignore（防止 Bot Secret / Webhook Key / Corp Secret 泄露）
+- 运行时日志文件（stdout/stderr）加入 .gitignore
+
+### 使用说明
+- 群机器人 Webhook 获取方式：企微群聊 → 右上角「...」→「消息推送」→「自定义消息推送」→ 复制 Webhook 地址
+- 管理面板地址：http://127.0.0.1:8505
 
 ---
 
