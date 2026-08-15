@@ -20,9 +20,18 @@ PUSHPLUS_TOKEN = "d6dc0bf7c0d748f4a5fb43fb24078303"
 TELEAGENT_PROXY_URL = "http://127.0.0.1:8088/v1/chat/completions"
 TELEAGENT_MODEL = "NewApi/chat-pro"
 
-# === 企业微信通讯录API（自动查姓名）===
+# === 企业微信通讯录API（自动查姓名）+ 应用消息推送 ===
 CORP_ID = "wx5ec6562b2e1ea8de"
 CORP_SECRET = "6L5KlRlEdgvudhKC2af9r675gSTtAS5cMhQ8EliQDr4"
+# 应用ID（管理后台 → 应用管理 → 自建应用 → AgentId）
+# 用于主动推送应用消息（1v1推送给指定同事）
+AGENT_ID = 1000002  # TODO: 准哥在企微管理后台确认实际的AgentId
+
+# === 群机器人 Webhook（主动推送群聊消息）===
+# 在群聊中添加"群机器人" → 复制 Webhook 地址 → 填入下方
+# 格式：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxxxx
+WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=3dc1266c-e228-401e-8c21-763cdead31e9"
+WEBHOOK_KEY = "3dc1266c-e228-401e-8c21-763cdead31e9"
 
 # === 企微用户ID → 姓名映射 ===
 # 手动映射优先级最高（可覆盖自动查询结果）
