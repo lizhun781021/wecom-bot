@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '52ac8d01-a97f-432b-a18c-a5347b07135b'
-  PropagateID: '52ac8d01-a97f-432b-a18c-a5347b07135b'
-  ReservedCode1: '9e32fffb-c5a4-443b-b5e8-3614c0aabda5'
-  ReservedCode2: '9e32fffb-c5a4-443b-b5e8-3614c0aabda5'
+  ProduceID: '1716aa0f-fb9d-45a3-8219-263646f82ccd'
+  PropagateID: '1716aa0f-fb9d-45a3-8219-263646f82ccd'
+  ReservedCode1: 'b9daf286-7b3f-41c7-9c28-a746ee7aa4e1'
+  ReservedCode2: 'b9daf286-7b3f-41c7-9c28-a746ee7aa4e1'
 ---
 
 # 更新日志
@@ -15,6 +15,33 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.2.0 (2026-08-16)
+
+新增 AI 配餐后处理三件套：配餐结果自动写入企微在线表格台账、自动创建跟进待办、复杂方案自动生成企微文档。机器人从「只回复文字」升级为「自动操作企微文档/表格/待办」。
+
+### 新增功能
+- **wecom_api.py**（新模块）：封装企微文档/表格/待办 API，通过 wecom-cli 调用（绕过 >10 人企业 API 限制）
+  - `append_peican_record()`：向配餐台账在线表格追加一行（自动建表+表头+缓存 docid）
+  - `create_todo()`：创建企微待办（含截止时间、提醒方式）
+  - `create_wecom_doc()`：创建企微文档并写入 Markdown 内容（edit_doc_content 优先，batch_update 降级）
+- **server.py 集成 post_process_actions()**：AI 回复后自动执行后处理
+  - `extract_peican_data()`：正则提取 AI 回复中的客户号码、套餐、金额等 7 个字段
+  - 智能判断：非配餐内容自动跳过（至少 2 个字段匹配才算配餐）
+  - 自动写台账 → 创建待办 → 生成文档 → 群里发通知（含表格链接、待办提示、文档链接）
+  - 文档生成条件：AI 回复 >800 字或含多级标题
+- **config.py 新增 `DEFAULT_TODO_USERID`**：待办默认创建人 userid
+- **wecom-cli JSON-RPC 解包**：`_wecom_cli()` 统一封装，自动解包 wecom-cli 的 JSON-RPC 响应格式
+
+### Bug 修复
+- 修复 `create_wecom_doc()` 的 `UnboundLocalError`（edit_doc_content 成功时 requests_list 未定义）
+- 修复 `append_peican_record()` 重建表格时 `_sheet_docid` 未重置的拼写错误
+
+### 依赖
+- 需安装 wecom-cli（`npm install -g @anthropic/wecom-cli` 或类似）并完成扫码配置
+- wecom-cli 需有文档（doc）和待办（todo）权限
 
 ---
 

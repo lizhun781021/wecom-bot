@@ -3,15 +3,15 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '59510ff4-eb0c-4715-ba3a-daba6a731bee'
-  PropagateID: '59510ff4-eb0c-4715-ba3a-daba6a731bee'
-  ReservedCode1: '9d8b684b-ed87-4bc6-8ac1-c4cb6cbb285d'
-  ReservedCode2: '9d8b684b-ed87-4bc6-8ac1-c4cb6cbb285d'
+  ProduceID: '107b7fff-e9f3-4ca5-b61f-cb5e5045c846'
+  PropagateID: '107b7fff-e9f3-4ca5-b61f-cb5e5045c846'
+  ReservedCode1: '9b6f5f0d-e099-4ced-ba5f-d9399bd076bb'
+  ReservedCode2: '9b6f5f0d-e099-4ced-ba5f-d9399bd076bb'
 ---
 
 # 企微Python机器人（长连接模式）
 
-![version](https://img.shields.io/badge/version-1.1.0-blue)
+![version](https://img.shields.io/badge/version-1.2.0-blue)
 
 ## 简介
 企业微信群聊智能机器人，基于 WebSocket 长连接接收消息，无需域名/备案/回调服务器。
@@ -19,10 +19,13 @@ AIGC:
 
 v1.1.0 新增**主动推送**能力：通过群机器人 Webhook，可从终端或 Web 面板主动向群聊推送文字/Markdown/图片消息。
 
+v1.2.0 新增**AI 配餐后处理三件套**：配餐结果自动写入企微在线表格台账、自动创建跟进待办、复杂方案自动生成企微文档。
+
 ## 双向能力
 ```
 【接收】企微群聊 @机器人 → WebSocket长连接 → AI处理 → 自动回复
 【推送】终端/脚本/Web面板 → Webhook API → 主动发消息到群聊
+【后处理】AI配餐回复 → 自动写台账+建待办+生成文档 → 群里发通知
 ```
 
 ## 架构
@@ -36,6 +39,7 @@ v1.1.0 新增**主动推送**能力：通过群机器人 Webhook，可从终端�
     ↓ 收到 AI 回复
     ↓ stream 格式回复企微群聊
     ↓ （如有文件）上传文件 → file 类型消息发送到群
+    ↓ 【v1.2.0 后处理】提取配餐数据 → 写台账 + 建待办 + 生成文档 → 群里发通知
 ```
 
 ## 版本管理
@@ -44,6 +48,7 @@ v1.1.0 新增**主动推送**能力：通过群机器人 Webhook，可从终端�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.2.0 | 2026-08-16 | AI配餐后处理：台账表格+跟进待办+企微文档 |
 | v1.1.0 | 2026-08-16 | 新增主动推送群聊消息 + Web管理面板（8505） |
 | v1.0.0 | 2026-08-09 | 首个正式版，支持群聊收图+AI配餐+文件发送全流程 |
 
@@ -56,14 +61,15 @@ v1.1.0 新增**主动推送**能力：通过群机器人 Webhook，可从终端�
 |------|------|
 | `VERSION` | 当前版本号 |
 | `CHANGELOG.md` | 更新日志 |
-| `server.py` | 机器人主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传） |
+| `server.py` | 机器人主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传、配餐后处理） |
+| `wecom_api.py` | 企微文档/表格/待办 API 封装（通过 wecom-cli 调用） |
 | `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送） |
 | `dashboard.py` | Web管理面板（端口8505，状态监控+主动推送+日志查看） |
 | `config.py` | 配置文件（**已加入.gitignore，不上传GitHub**） |
 | `config_example.py` | 配置模板（脱敏样例，复制为config.py后填入真实凭证） |
+| `peican_sheet_cache.json` | 配餐台账表格 docid/sheet_id 缓存 |
 | `requirements.txt` | Python 依赖 |
 | `venv/` | Python 虚拟环境 |
-| `images/` | 接收的图片保存目录 |
 
 ## 快速部署
 1. 克隆仓库：`git clone https://github.com/lizhun781021/wecom-bot.git`
@@ -84,6 +90,7 @@ TELEAGENT_MODEL = "NewApi/chat-pro"
 WECOM_USER_MAP = {       # 企微用户ID → 姓名映射（会话标题显示用）
     "wo-xxxxx": "李准",
 }
+DEFAULT_TODO_USERID = "your_userid"  # 待办默认创建人userid（企微通讯录中的userid）
 ```
 
 ## 群机器人 Webhook 获取方式
@@ -149,3 +156,13 @@ python push.py user <userid> "消息内容"
 1. 确认 `config.py` 中 `WEBHOOK_URL` 已填写
 2. 命令行 `python push.py group "消息"` 或通过 Web 面板发送
 3. 消息将出现在群聊中（以机器人身份发送）
+
+### AI 配餐后处理（自动执行）
+1. 群聊 @机器人 发图（账单截图等）或文字描述客户情况
+2. AI 回复配餐方案后，自动执行后处理：
+   - 提取配餐数据（客户号码、套餐、金额等）写入企微在线表格台账
+   - 创建跟进待办（默认给 `DEFAULT_TODO_USERID`）
+   - 复杂方案（>800字或多级标题）自动生成企微文档
+3. 群里收到通知消息（含台账链接、待办提示、文档链接）
+
+> **前提**：需安装 wecom-cli 并完成扫码配置，确保有文档（doc）和待办（todo）权限

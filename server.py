@@ -25,6 +25,7 @@ import websocket  # pip install websocket-client
 
 import config
 import dashboard
+import wecom_api
 
 # ========== Dashboard 管理面板端口 ==========
 DASHBOARD_PORT = 8505
@@ -396,6 +397,161 @@ def extract_file_paths(text):
     return paths
 
 
+# ========== 配餐后处理：表格台账 + 待办 + 文档 ==========
+
+def extract_peican_data(ai_reply, user_name, from_user):
+    """从AI回复文本中提取结构化配餐数据，用于写入台账和创建待办
+    
+    尝试用正则匹配AI回复中的关键配餐信息：
+    客户号码、当前套餐、出账金额、推荐套餐、套餐月费、配餐路径、提值空间
+    
+    Returns:
+        dict or None: struct_field -> value，至少包含部分字段；None表示没有配餐相关内容
+    """
+    data = {}
+    data["时间"] = time.strftime("%Y-%m-%d %H:%M")
+    data["处理人"] = user_name
+    
+    # 清理Markdown格式标记，便于正则匹配
+    text = ai_reply.replace('**', '').replace('*', '').replace('###', '').replace('##', '').replace('#', '')
+    
+    # 客户号码：匹配手机号/固话模式
+    phone_match = re.search(r'(客户号码|客户手机|号码|手机号)[：:\s]*([0-9\-]{7,13})', text)
+    if phone_match:
+        data["客户号码"] = phone_match.group(2)
+    else:
+        phone_match2 = re.search(r'(1[3-9]\d{9})', text)
+        if phone_match2:
+            data["客户号码"] = phone_match2.group(1)
+        else:
+            data["客户号码"] = "未提取"
+    
+    # 当前套餐
+    cur_match = re.search(r'(当前套餐|原套餐|现有套餐)[：:\s]*([^\n，。]+)', text)
+    if cur_match:
+        data["当前套餐"] = cur_match.group(2).strip()[:30]
+    else:
+        data["当前套餐"] = "未提取"
+    
+    # 出账金额
+    bill_match = re.search(r'(出账金额|月出账|出账|账单金额|账单|消费)[：:\s]*([0-9.]+)\s*元?', text)
+    if bill_match:
+        data["出账金额"] = bill_match.group(2) + "元"
+    else:
+        data["出账金额"] = "未提取"
+    
+    # 推荐套餐
+    rec_match = re.search(r'(推荐套餐|建议套餐|配餐结果)[：:\s]*([^\n，。]+)', text)
+    if rec_match:
+        data["推荐套餐"] = rec_match.group(2).strip()[:30]
+    else:
+        data["推荐套餐"] = "未提取"
+    
+    # 套餐月费
+    fee_match = re.search(r'套餐月费[：:\s]*([0-9.]+)\s*元?', text)
+    if fee_match:
+        data["套餐月费"] = fee_match.group(1) + "元"
+    else:
+        data["套餐月费"] = "未提取"
+    
+    # 配餐路径
+    path_match = re.search(r'(配餐路径|路径)[：:\s]*([^\n，。]+)', text)
+    if path_match:
+        data["配餐路径"] = path_match.group(2).strip()[:30]
+    else:
+        data["配餐路径"] = "未提取"
+    
+    # 提值空间
+    uplift_match = re.search(r'(提值空间|提值)[：:\s]*([0-9.+\-～到]+)\s*元?', text)
+    if uplift_match:
+        data["提值空间"] = uplift_match.group(2) + "元/月"
+    else:
+        uplift_match2 = re.search(r'(提值空间|提值|增收)[：:\s]*([^\n，。]+)', text)
+        if uplift_match2:
+            data["提值空间"] = uplift_match2.group(2).strip()[:20]
+        else:
+            data["提值空间"] = "未提取"
+    
+    data["备注"] = ""
+    
+    # 判断是否为配餐相关回复：至少有2个字段成功提取
+    extracted_count = sum(1 for v in data.values() if v and v != "未提取" and v != "" and v not in [user_name, time.strftime("%Y-%m-%d %H:%M"), ""])
+    if extracted_count < 2:
+        logger.info(f"回复未匹配到足够配餐数据（{extracted_count}个字段），跳过后处理")
+        return None
+    
+    logger.info(f"已提取配餐数据: {data}")
+    return data
+
+
+def post_process_actions(ws, req_id, stream_id, ai_reply, user_name, from_user):
+    """AI回复后的自动后处理：写台账 + 建待办 + 生成文档
+    
+    在process_and_reply发送文字回复后调用，异步执行不阻塞主流程。
+    任何一步失败不影响其他步骤。
+    """
+    # 1. 提取配餐数据
+    peican_data = extract_peican_data(ai_reply, user_name, from_user)
+    if not peican_data:
+        return
+    
+    action_messages = []  # 收集每步结果，最后统一发一条stream消息
+    
+    # 2. 写入配餐台账表格
+    try:
+        sheet_result = wecom_api.append_peican_record(peican_data)
+        if sheet_result.get("success"):
+            action_messages.append(f"📋 配餐台账已记录：{sheet_result['url']}")
+            logger.info(f"配餐台账写入成功: {sheet_result['url']}")
+        else:
+            logger.warning(f"配餐台账写入失败: {sheet_result.get('error')}")
+    except Exception as e:
+        logger.error(f"配餐台账写入异常: {e}")
+    
+    # 3. 创建跟进待办
+    try:
+        todo_content = f"【配餐跟进】客户{peican_data.get('客户号码', '')}，推荐{peican_data.get('推荐套餐', '')}"
+        todo_userid = getattr(config, 'DEFAULT_TODO_USERID', 'sscblizhun')
+        todo_result = wecom_api.create_todo(
+            content=todo_content,
+            follower_userid=todo_userid
+        )
+        if todo_result.get("success"):
+            action_messages.append("✅ 已创建跟进待办")
+            logger.info(f"待办创建成功: {todo_result.get('todo_id')}")
+        else:
+            logger.warning(f"待办创建失败: {todo_result.get('error')}")
+    except Exception as e:
+        logger.error(f"待办创建异常: {e}")
+    
+    # 4. 复杂配餐方案生成企微文档
+    # 判断是否需要生成文档：AI回复较长（>800字）或包含多级标题
+    needs_doc = len(ai_reply) > 800 or ai_reply.count('##') >= 2 or ai_reply.count('#') >= 3
+    if needs_doc:
+        try:
+            # 清理FILE_PATH行
+            clean_reply = re.sub(r'FILE_PATH:.+?(?:\n|$)', '', ai_reply).strip()
+            doc_name = f"配餐方案_{peican_data.get('客户号码', '客户')}_{time.strftime('%m%d%H%M')}"
+            doc_result = wecom_api.create_wecom_doc(doc_name, clean_reply)
+            if doc_result.get("success"):
+                action_messages.append(f"📄 详细方案已生成文档：{doc_result['url']}")
+                logger.info(f"配餐文档生成成功: {doc_result['url']}")
+            else:
+                logger.warning(f"配餐文档生成失败: {doc_result.get('error')}")
+        except Exception as e:
+            logger.error(f"配餐文档生成异常: {e}")
+    
+    # 5. 发送后处理结果通知
+    if action_messages:
+        try:
+            notice = "\n".join(action_messages)
+            # 用新的stream消息发送（原stream已finish）
+            reply_stream(ws, req_id, notice, stream_id=None, finish=True)
+            logger.info(f"后处理通知已发送: {len(action_messages)}条")
+        except Exception as e:
+            logger.error(f"发送后处理通知失败: {e}")
+
+
 def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user):
     """异步处理：调用TeleAgent代理 -> 回复群里（含文件发送）
     file_paths: [(path, type), type为'image'/'file'/'voice'/'video']
@@ -499,6 +655,13 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
         dashboard.update_message_status(0, "已回复")
         with dashboard.BOT_STATUS_LOCK:
             dashboard.BOT_STATUS["total_replies"] += 1
+
+    # ========== 配餐后处理：写台账 + 建待办 + 生成文档 ==========
+    # 在主回复发送完成后，异步执行后处理动作
+    try:
+        post_process_actions(ws, req_id, stream_id, result, user_name, from_user)
+    except Exception as e:
+        logger.error(f"配餐后处理异常: {e}")
 
 
 # ========== PushPlus 通知 ==========

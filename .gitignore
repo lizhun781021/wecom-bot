@@ -13,6 +13,7 @@ images/
 # Runtime
 pending_files.json
 name_cache.json
+peican_sheet_cache.json
 
 # IDE
 .vscode/

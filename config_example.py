@@ -29,6 +29,10 @@ CORP_SECRET = "your_corp_secret_here"
 # 应用ID（管理后台 → 应用管理 → 自建应用 → AgentId）
 AGENT_ID = 1000002
 
+# === 待办功能配置 ===
+# 默认待办创建人userid（企微通讯录中的userid，非机器人ID）
+DEFAULT_TODO_USERID = "your_userid_here"
+
 # === 企微用户ID → 姓名映射 ===
 # 手动映射优先级最高（可覆盖自动查询结果）
 # 新用户会通过通讯录API自动查询姓名并缓存到本地，无需手动加
