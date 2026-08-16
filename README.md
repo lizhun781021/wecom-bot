@@ -3,15 +3,15 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '6630b6d3-5345-4784-bb52-632c8cb6180a'
-  PropagateID: '6630b6d3-5345-4784-bb52-632c8cb6180a'
-  ReservedCode1: 'fe43e4d2-3b52-41ca-9b31-4cc2614ef4b8'
-  ReservedCode2: 'fe43e4d2-3b52-41ca-9b31-4cc2614ef4b8'
+  ProduceID: '24890d9f-dfd5-4c57-8470-76ed5c5ef819'
+  PropagateID: '24890d9f-dfd5-4c57-8470-76ed5c5ef819'
+  ReservedCode1: '3b7d6d81-9bb4-41e8-9cdd-425bbc29ff9d'
+  ReservedCode2: '3b7d6d81-9bb4-41e8-9cdd-425bbc29ff9d'
 ---
 
 # 企微Python机器人（长连接模式）
 
-![version](https://img.shields.io/badge/version-1.3.0-blue)
+![version](https://img.shields.io/badge/version-1.5.8-blue)
 
 ## 简介
 企业微信群聊智能机器人，基于 WebSocket 长连接接收消息，无需域名/备案/回调服务器。
@@ -105,6 +105,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.5.8 | 2026-08-16 | 修复QQ文件推送文件名丢失（上传带 file_name，不再显示"未命名"） |
 | v1.5.7 | 2026-08-16 | 新增QQ主动发送文件（base64→官方v2文件接口→富媒体消息，≤5MB） |
 | v1.5.6 | 2026-08-16 | 消息记录增加「场景」列（群聊/私聊，企微+QQ 双通道+历史回填） |
 | v1.5.5 | 2026-08-16 | 修复QQ消息记录重启丢失（启动加载历史+落盘防御合并） |

@@ -343,6 +343,9 @@ def qq_push_file(kind: str, openid: str, file_b64: str, filename: str = "", capt
             "file_data": file_b64,
             "srv_send_msg": False,
         }
+        # 关键：必须带 file_name，否则 QQ 端显示「未命名」（官方字段，botpy 未封装）
+        if filename:
+            payload["file_name"] = filename
         from botpy.http import Route
         if kind == "group":
             route = Route("POST", "/v2/groups/{group_openid}/files", group_openid=openid)

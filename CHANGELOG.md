@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '5eaf90a2-ccc9-46b4-b9c8-24720c41e7ca'
-  PropagateID: '5eaf90a2-ccc9-46b4-b9c8-24720c41e7ca'
-  ReservedCode1: '956a4acb-b688-42cd-8f53-84be3b8b9bc9'
-  ReservedCode2: '956a4acb-b688-42cd-8f53-84be3b8b9bc9'
+  ProduceID: 'd9fc81b0-205a-4cac-9408-95393d96fecb'
+  PropagateID: 'd9fc81b0-205a-4cac-9408-95393d96fecb'
+  ReservedCode1: 'd324b9ff-d0cf-4caf-816a-e880efe4d038'
+  ReservedCode2: 'd324b9ff-d0cf-4caf-816a-e880efe4d038'
 ---
 
 # 更新日志
@@ -17,6 +17,17 @@ AIGC:
 - 修订号：Bug修复
 
 ---
+
+## v1.5.8 (2026-08-16)
+
+**修复 QQ 文件推送文件名丢失**：QQ 端收到文件显示「未命名」，实测确认根因——官方 `/v2/users|groups/{openid}/files` 上传接口支持 `file_name` 字段（botpy SDK 未封装），此前上传 payload 未携带该字段，导致接收端无文件名。
+
+### Bug 修复
+- **qq_official_adapter.py**：`qq_push_file()` 上传 payload 增加 `file_name` 字段（文件名从面板 → 18506 内部端点 → 适配器全程透传），文件名正常显示
+- 已实测：私聊推送 `文件名修复测试.txt` 成功，日志确认 `文件发送成功 (文件名修复测试.txt)`
+
+### 备注
+- QQ 群聊发送（含 @ 被动回复与文件推送）被官方限制：错误码 `40034105 主动消息失败,无权限`（2025 年 4 月腾讯下线 QQ 机器人主动消息推送能力，群通道收敛）；私聊（c2c）通道不受影响
 
 ## v1.5.7 (2026-08-16)
 
