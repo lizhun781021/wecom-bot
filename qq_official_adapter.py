@@ -148,8 +148,12 @@ def _display_name(openid: str, max_len: int = 40) -> str:
     return str(name)[:max_len]
 
 
-def _record_message(msg_type: str, user: str, preview: str, status: str = "处理中"):
-    """记录一条 QQ 消息（内存+落盘），供 dashboard（独立进程）合并展示"""
+def _record_message(msg_type: str, user: str, preview: str, status: str = "处理中", scene: str = ""):
+    """记录一条 QQ 消息（内存+落盘），供 dashboard（独立进程）合并展示
+
+    scene: 来源场景，'group'=群聊 / 'single'=私聊 / ''=未知（面板显示'-'）
+    """
+    global QQ_MESSAGES
     rec = {
         "time": time.strftime("%H:%M:%S"),
         "full_time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -158,6 +162,7 @@ def _record_message(msg_type: str, user: str, preview: str, status: str = "处�
         "user": _display_name(user),
         "preview": (preview or "")[:80],
         "status": status,
+        "scene": scene if scene in ("group", "single") else "",
     }
     with QQ_MESSAGES_LOCK:
         QQ_MESSAGES.insert(0, rec)
@@ -487,7 +492,8 @@ class QQOfficialClient(botpy.Client):
             # 记录到消息列表（供面板消息记录展示）
             _record_message("text" if content else "image",
                             from_user,
-                            content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"))
+                            content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"),
+                            scene="group")
 
             # 异步处理（不阻塞事件循环）
             loop = asyncio.get_event_loop()
@@ -527,7 +533,8 @@ class QQOfficialClient(botpy.Client):
             # 记录到消息列表（供面板消息记录展示）
             _record_message("text" if content else "image",
                             from_user,
-                            content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"))
+                            content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"),
+                            scene="single")
 
             loop = asyncio.get_event_loop()
             loop.run_in_executor(None, lambda: _handle_qq_message(

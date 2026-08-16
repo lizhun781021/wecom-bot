@@ -977,7 +977,7 @@ def handle_text_message(ws, msg, req_id):
 
     logger.info(f"收到文字消息: from={from_user}, chattype={chattype}, content={text_content[:50]}")
     user_name = get_user_name(from_user)
-    dashboard.add_message_record("text", user_name, text_content[:80], "处理中")
+    dashboard.add_message_record("text", user_name, text_content[:80], "处理中", scene=chattype)
 
     # 先检查待发文件队列
     if flush_pending_files(ws, req_id):
@@ -1006,7 +1006,7 @@ def handle_image_message(ws, msg, req_id):
 
     logger.info(f"收到图片消息: from={from_user}, chattype={chattype}")
     user_name = get_user_name(from_user)
-    dashboard.add_message_record("image", user_name, "图片消息", "处理中")
+    dashboard.add_message_record("image", user_name, "图片消息", "处理中", scene=chattype)
 
     # 先检查待发文件队列
     if flush_pending_files(ws, req_id):
@@ -1051,14 +1051,15 @@ def handle_file_message(ws, msg, req_id):
     """处理文件消息：下载解密 -> 走TeleAgent代理"""
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
+    chattype = body.get("chattype", "single")
     file_info = body.get("file", {})
     url = file_info.get("url", "")
     aeskey = file_info.get("aeskey", "")
     filename = file_info.get("filename", "unknown_file")
 
-    logger.info(f"收到文件消息: from={from_user}, filename={filename}")
+    logger.info(f"收到文件消息: from={from_user}, chattype={chattype}, filename={filename}")
     user_name = get_user_name(from_user)
-    dashboard.add_message_record("file", user_name, f"文件: {filename}", "处理中")
+    dashboard.add_message_record("file", user_name, f"文件: {filename}", "处理中", scene=chattype)
 
     # 先回复收到
     stream_id = reply_stream(ws, req_id, f"收到文件: {filename}，正在处理...", finish=False)
@@ -1090,13 +1091,14 @@ def handle_voice_message(ws, msg, req_id):
     """处理语音消息：下载解密 -> 走TeleAgent代理（offline_asr转写分析）"""
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
+    chattype = body.get("chattype", "single")
     voice_info = body.get("voice", {})
     url = voice_info.get("url", "")
     aeskey = voice_info.get("aeskey", "")
 
-    logger.info(f"收到语音消息: from={from_user}")
+    logger.info(f"收到语音消息: from={from_user}, chattype={chattype}")
     user_name = get_user_name(from_user)
-    dashboard.add_message_record("voice", user_name, "语音消息", "处理中")
+    dashboard.add_message_record("voice", user_name, "语音消息", "处理中", scene=chattype)
 
     if not url:
         reply_stream(ws, req_id, "语音消息无下载URL")
@@ -1131,13 +1133,14 @@ def handle_video_message(ws, msg, req_id):
     """处理视频消息：下载解密 -> 走TeleAgent代理"""
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
+    chattype = body.get("chattype", "single")
     video_info = body.get("video", {})
     url = video_info.get("url", "")
     aeskey = video_info.get("aeskey", "")
 
-    logger.info(f"收到视频消息: from={from_user}")
+    logger.info(f"收到视频消息: from={from_user}, chattype={chattype}")
     user_name = get_user_name(from_user)
-    dashboard.add_message_record("video", user_name, "视频消息", "处理中")
+    dashboard.add_message_record("video", user_name, "视频消息", "处理中", scene=chattype)
 
     if not url:
         reply_stream(ws, req_id, "视频消息无下载URL")
@@ -1181,7 +1184,7 @@ def handle_mixed_message(ws, msg, req_id):
     # 预览内容
     text_parts_preview = [item.get("text", {}).get("content", "") for item in msg_items if item.get("msgtype") == "text"]
     preview = " ".join(text_parts_preview)[:80] if text_parts_preview else f"{len(msg_items)}个附件"
-    dashboard.add_message_record("mixed", user_name, preview, "处理中")
+    dashboard.add_message_record("mixed", user_name, preview, "处理中", scene=chattype)
 
     # 先检查待发文件队列
     if flush_pending_files(ws, req_id):

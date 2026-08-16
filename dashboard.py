@@ -69,8 +69,11 @@ def setup_log_capture():
     logger.addHandler(handler)
 
 
-def add_message_record(msg_type, user, preview, status="处理中"):
-    """添加一条消息记录（供 server.py 调用）"""
+def add_message_record(msg_type, user, preview, status="处理中", scene=""):
+    """添加一条消息记录（供 server.py 调用）
+
+    scene: 来源场景，'group'=群聊 / 'single'=私聊 / ''=未知（显示'-'）
+    """
     with MESSAGE_RECORDS_LOCK:
         MESSAGE_RECORDS.insert(0, {
             "time": time.strftime("%H:%M:%S"),
@@ -78,7 +81,8 @@ def add_message_record(msg_type, user, preview, status="处理中"):
             "type": msg_type,
             "user": user,
             "preview": preview[:80] if preview else "",
-            "status": status
+            "status": status,
+            "scene": scene if scene in ("group", "single") else ""
         })
         if len(MESSAGE_RECORDS) > MAX_MESSAGE_RECORDS:
             del MESSAGE_RECORDS[MAX_MESSAGE_RECORDS:]
@@ -238,6 +242,8 @@ tr:hover { background: #162232; }
 .tag-voice { background: #1e2b3b; color: #67e8f9; }
 .tag-video { background: #3b1e1e; color: #f87171; }
 .tag-qq { background: #1e3a2f; color: #34d399; }
+.tag-group { background: #1e3a5f; color: #60a5fa; }
+.tag-single { background: #3b1e3f; color: #c084fc; }
 .status-ok { color: #4ade80; }
 .status-processing { color: #fbbf24; }
 .status-fail { color: #ef4444; }
@@ -353,7 +359,7 @@ tr:hover { background: #162232; }
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>日期</th><th>时间</th><th>来源</th><th>类型</th><th>发送人</th><th>内容预览</th><th>状态</th></tr></thead>
+        <thead><tr><th>日期</th><th>时间</th><th>来源</th><th>场景</th><th>类型</th><th>发送人</th><th>内容预览</th><th>状态</th></tr></thead>
         <tbody id="msg-table"></tbody>
       </table>
     </div>
@@ -433,16 +439,18 @@ async function loadMessages() {
     document.getElementById('msg-count').textContent = d.length + ' 条';
     const tbody = document.getElementById('msg-table');
     if (d.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#5a6a7a;padding:30px;">暂无消息记录</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#5a6a7a;padding:30px;">暂无消息记录</td></tr>';
       return;
     }
     tbody.innerHTML = d.map(m => {
       const ft = m.full_time || '';
       const date = ft ? ft.split(' ')[0] : (m.time ? '' : '-');
+      const scene = m.scene === 'group' ? '群聊' : (m.scene === 'single' ? '私聊' : '-');
       return `<tr>
       <td>${date || '-'}</td>
       <td>${m.time}</td>
       <td><span class="tag ${m.source === 'qq' ? 'tag-qq' : 'tag-text'}">${m.source === 'qq' ? 'QQ' : '企微'}</span></td>
+      <td><span class="tag ${scene === '群聊' ? 'tag-group' : (scene === '私聊' ? 'tag-single' : '')}">${scene}</span></td>
       <td><span class="tag ${tagClass(m.type)}">${m.type}</span></td>
       <td>${m.user}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.preview}</td>
@@ -889,13 +897,19 @@ def _backfill_messages_from_log():
                     else:
                         preview = f"{mtype}消息"
 
+                    # 解析来源场景（chattype=group/single，日志里可能没有该字段）
+                    ct = re.search(r'chattype=(\S+)', line)
+                    scene = ct.group(1).rstrip(',') if ct else ""
+                    scene = scene if scene in ("group", "single") else ""
+
                     records.append({
                         "time": time_str,
                         "full_time": full_time,
                         "type": mtype,
                         "user": user,
                         "preview": preview,
-                        "status": "已处理"  # 历史消息标记为已处理
+                        "status": "已处理",  # 历史消息标记为已处理
+                        "scene": scene,
                     })
                     break
 

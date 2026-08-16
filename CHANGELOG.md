@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '05bc0aa0-c63c-402f-8b91-2906f37985d0'
-  PropagateID: '05bc0aa0-c63c-402f-8b91-2906f37985d0'
-  ReservedCode1: '7f5ecf2b-dc49-4127-8e03-9247755efbd4'
-  ReservedCode2: '7f5ecf2b-dc49-4127-8e03-9247755efbd4'
+  ProduceID: 'b886fd7f-30b3-4cf4-900d-0b6a3d54ecd4'
+  PropagateID: 'b886fd7f-30b3-4cf4-900d-0b6a3d54ecd4'
+  ReservedCode1: 'bbaef8c3-40ec-48d2-a766-7a60c1166aeb'
+  ReservedCode2: 'bbaef8c3-40ec-48d2-a766-7a60c1166aeb'
 ---
 
 # 更新日志
@@ -15,6 +15,19 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.5.6 (2026-08-16)
+
+**消息记录增加「场景」列**：面板「消息记录」表格新增「场景」列，每条消息可区分来源是群聊还是私聊。
+
+### 新增功能
+- **面板渲染**（dashboard.py）：`add_message_record()` 增加 `scene` 参数；表头增加「场景」列（第 4 列）；数据行按 `scene` 渲染「群聊」蓝色标签 /「私聊」紫色标签（`.tag-group` / `.tag-single`），未知显示 `-`
+- **企微侧**（server.py）：六类消息处理（text/image/file/voice/video/mixed）均从请求体读取 `chattype` 并传入 `scene`，其中 file/voice/video 三处此前未读取 chattype，本次补全
+- **QQ 侧**（qq_official_adapter.py）：`_record_message()` 增加 `scene` 参数；群 @ 回调传 `group`、单聊回调传 `single`
+- **历史回填**（dashboard.py）：`_backfill_messages_from_log()` 解析日志中的 `chattype=` 字段回填场景，无该字段的旧记录显示 `-`
+- 存量 `qq_messages.json` 7 条私聊测试记录已补 `scene: "single"`
 
 ---
 

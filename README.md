@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '8a2096d2-9e1b-45c1-b9ab-6f2503d91bdd'
-  PropagateID: '8a2096d2-9e1b-45c1-b9ab-6f2503d91bdd'
-  ReservedCode1: '6c6d6397-9c06-4d03-9d55-9912e2490f5f'
-  ReservedCode2: '6c6d6397-9c06-4d03-9d55-9912e2490f5f'
+  ProduceID: '2d03b335-aaed-4dfa-bcd6-dfbe1f0885d7'
+  PropagateID: '2d03b335-aaed-4dfa-bcd6-dfbe1f0885d7'
+  ReservedCode1: '890318a5-cba0-4706-9f25-27eb467b0f7a'
+  ReservedCode2: '890318a5-cba0-4706-9f25-27eb467b0f7a'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -105,6 +105,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.5.6 | 2026-08-16 | 消息记录增加「场景」列（群聊/私聊，企微+QQ 双通道+历史回填） |
 | v1.5.5 | 2026-08-16 | 修复QQ消息记录重启丢失（启动加载历史+落盘防御合并） |
 | v1.5.4 | 2026-08-16 | 消息记录增加日期列（跨天消息一眼可辨） |
 | v1.5.3 | 2026-08-16 | QQ消息显示昵称：QQ_USER_NAME_MAP映射+面板会话/记录昵称化 |
