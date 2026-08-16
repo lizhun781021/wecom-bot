@@ -94,6 +94,23 @@ QQ_MESSAGES = []  # 内存缓存最近100条
 QQ_MESSAGES_LOCK = threading.Lock()
 
 
+def _load_qq_messages():
+    """启动时加载已落盘的历史消息，避免重启覆盖丢失历史"""
+    global QQ_MESSAGES
+    try:
+        if os.path.exists(QQ_MESSAGES_FILE):
+            with open(QQ_MESSAGES_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, list):
+                QQ_MESSAGES = loaded[:100]
+                logger.info(f"[QQ] 启动加载历史消息 {len(QQ_MESSAGES)} 条")
+    except Exception as e:
+        logger.warning(f"[QQ] 加载历史消息失败（忽略，继续空列表）: {e}")
+
+
+_load_qq_messages()
+
+
 def _persist_status():
     """把状态+会话写入 qq_status.json，供 dashboard（独立进程）读取"""
     try:
@@ -146,6 +163,20 @@ def _record_message(msg_type: str, user: str, preview: str, status: str = "处�
         QQ_MESSAGES.insert(0, rec)
         if len(QQ_MESSAGES) > 100:
             del QQ_MESSAGES[100:]
+        # 落盘前防御合并：若当前进程内存为空而磁盘已有历史，说明是旧版本残留，
+        # 保留磁盘历史（避免重启覆盖丢失）；正常情况磁盘与内存一致，直接写回
+        try:
+            if os.path.exists(QQ_MESSAGES_FILE):
+                with open(QQ_MESSAGES_FILE, "r", encoding="utf-8") as f:
+                    disk = json.load(f)
+                if isinstance(disk, list) and disk:
+                    disk_ids = {(r.get("full_time"), r.get("preview")) for r in disk[:100]}
+                    mem_ids = {(r.get("full_time"), r.get("preview")) for r in QQ_MESSAGES}
+                    extra = [r for r in disk if (r.get("full_time"), r.get("preview")) not in mem_ids]
+                    if extra:
+                        QQ_MESSAGES = (QQ_MESSAGES + extra)[:100]
+        except Exception:
+            pass  # 磁盘读取失败不影响本次写入
         try:
             with open(QQ_MESSAGES_FILE, "w", encoding="utf-8") as f:
                 json.dump(QQ_MESSAGES, f, ensure_ascii=False, indent=2)

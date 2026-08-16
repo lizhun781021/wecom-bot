@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'd28da516-e3f9-41fc-9c51-6abe0851d975'
-  PropagateID: 'd28da516-e3f9-41fc-9c51-6abe0851d975'
-  ReservedCode1: '73f8d3d6-171c-4da0-8b1d-5cdecb997743'
-  ReservedCode2: '73f8d3d6-171c-4da0-8b1d-5cdecb997743'
+  ProduceID: '05bc0aa0-c63c-402f-8b91-2906f37985d0'
+  PropagateID: '05bc0aa0-c63c-402f-8b91-2906f37985d0'
+  ReservedCode1: '7f5ecf2b-dc49-4127-8e03-9247755efbd4'
+  ReservedCode2: '7f5ecf2b-dc49-4127-8e03-9247755efbd4'
 ---
 
 # 更新日志
@@ -15,6 +15,17 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.5.5 (2026-08-16)
+
+**修复 QQ 消息记录重启丢失**：QQ 适配器重启后内存列表被清空，新消息落盘时整体覆盖 `qq_messages.json`，导致历史记录只剩最新一条。
+
+### 修复
+- **启动时加载历史**（qq_official_adapter.py）：新增 `_load_qq_messages()`，启动时从 `qq_messages.json` 读回最多 100 条历史到内存，重启不再丢记录
+- **落盘前防御合并**：`_record_message()` 写盘前先读取磁盘历史，与内存去重合并后再写回（按 `full_time+preview` 判重），杜绝任何路径下覆盖丢失
+- 已从适配器日志找回 15:48「测试」记录并回填 `qq_messages.json`，面板恢复两条历史
 
 ---
 
