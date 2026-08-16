@@ -3,15 +3,15 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '107b7fff-e9f3-4ca5-b61f-cb5e5045c846'
-  PropagateID: '107b7fff-e9f3-4ca5-b61f-cb5e5045c846'
-  ReservedCode1: '9b6f5f0d-e099-4ced-ba5f-d9399bd076bb'
-  ReservedCode2: '9b6f5f0d-e099-4ced-ba5f-d9399bd076bb'
+  ProduceID: '0a72f488-b2cb-4e2b-91cb-c031dde5e55e'
+  PropagateID: '0a72f488-b2cb-4e2b-91cb-c031dde5e55e'
+  ReservedCode1: '50027a19-9a62-4d2b-b9f0-64963ad0f907'
+  ReservedCode2: '50027a19-9a62-4d2b-b9f0-64963ad0f907'
 ---
 
 # 企微Python机器人（长连接模式）
 
-![version](https://img.shields.io/badge/version-1.2.0-blue)
+![version](https://img.shields.io/badge/version-1.3.0-blue)
 
 ## 简介
 企业微信群聊智能机器人，基于 WebSocket 长连接接收消息，无需域名/备案/回调服务器。
@@ -20,6 +20,8 @@ AIGC:
 v1.1.0 新增**主动推送**能力：通过群机器人 Webhook，可从终端或 Web 面板主动向群聊推送文字/Markdown/图片消息。
 
 v1.2.0 新增**AI 配餐后处理三件套**：配餐结果自动写入企微在线表格台账、自动创建跟进待办、复杂方案自动生成企微文档。
+
+v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送图片到群聊/个人，超 2MB 自动压缩；面板改为**主动推送 / 消息记录 / 实时日志**三个 Tab 菜单，默认打开即推送页。
 
 ## 双向能力
 ```
@@ -48,6 +50,7 @@ v1.2.0 新增**AI 配餐后处理三件套**：配餐结果自动写入企微在
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.3.0 | 2026-08-16 | 面板图片推送+自动压缩（≤2MB）+Tab三菜单布局 |
 | v1.2.0 | 2026-08-16 | AI配餐后处理：台账表格+跟进待办+企微文档 |
 | v1.1.0 | 2026-08-16 | 新增主动推送群聊消息 + Web管理面板（8505） |
 | v1.0.0 | 2026-08-09 | 首个正式版，支持群聊收图+AI配餐+文件发送全流程 |
@@ -63,8 +66,8 @@ v1.2.0 新增**AI 配餐后处理三件套**：配餐结果自动写入企微在
 | `CHANGELOG.md` | 更新日志 |
 | `server.py` | 机器人主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传、配餐后处理） |
 | `wecom_api.py` | 企微文档/表格/待办 API 封装（通过 wecom-cli 调用） |
-| `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送） |
-| `dashboard.py` | Web管理面板（端口8505，状态监控+主动推送+日志查看） |
+| `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送，图片超2MB自动压缩） |
+| `dashboard.py` | Web管理面板（端口8505，状态监控+主动推送+消息记录+实时日志，Tab菜单） |
 | `config.py` | 配置文件（**已加入.gitignore，不上传GitHub**） |
 | `config_example.py` | 配置模板（脱敏样例，复制为config.py后填入真实凭证） |
 | `peican_sheet_cache.json` | 配餐台账表格 docid/sheet_id 缓存 |
@@ -140,7 +143,7 @@ python push.py group_img /path/to/image.jpg
 python push.py user <userid> "消息内容"
 ```
 
-或通过 Web 管理面板 http://127.0.0.1:8505 直接发送。
+或通过 Web 管理面板 http://127.0.0.1:8505 直接发送（支持文字/Markdown/图片，图片超2MB自动压缩）。
 
 ## 依赖服务
 - **openai-proxy**（端口8088）：本地 OpenAI 兼容代理，将请求转发给 TeleAgent super-agent

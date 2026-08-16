@@ -23,6 +23,7 @@
 """
 
 import os
+import io
 import json
 import time
 import base64
@@ -34,6 +35,65 @@ import threading
 import config
 
 logger = logging.getLogger(__name__)
+
+# 企微群机器人图片限制：base64 后不超过 2MB（实际按 1.9MB 留余量）
+_MAX_IMAGE_B64 = 1.9 * 1024 * 1024
+
+
+def _auto_compress_image(image_path, max_bytes=_MAX_IMAGE_B64):
+    """
+    若图片 base64 后超过企微限制，自动压缩（先降质量，再降分辨率）至达标。
+    返回 (输出路径, 是否压缩过)。输出文件存于临时目录，调用方负责清理。
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return image_path, False
+    try:
+        with open(image_path, 'rb') as f:
+            raw = f.read()
+        if len(base64.b64encode(raw)) <= max_bytes:
+            return image_path, False
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+    except Exception as e:
+        logger.warning(f"[push] 图片检查失败，按原图发送: {e}")
+        return image_path, False
+
+    # 先转 RGB 并尝试保留原尺寸降质量
+    if im.mode in ('RGBA', 'P', 'LA'):
+        im = im.convert('RGB')
+    quality = 88
+    buf = io.BytesIO()
+    while quality >= 40:
+        buf.seek(0)
+        buf.truncate(0)
+        im.save(buf, format='JPEG', quality=quality)
+        if len(base64.b64encode(buf.getvalue())) <= max_bytes:
+            break
+        quality -= 8
+
+    # 降质量还不够，再缩小分辨率
+    if len(base64.b64encode(buf.getvalue())) > max_bytes:
+        w, h = im.size
+        scale = 0.9
+        while scale > 0.3:
+            new_w, new_h = int(w * scale), int(h * scale)
+            im2 = im.resize((new_w, new_h), Image.LANCZOS)
+            buf.seek(0)
+            buf.truncate(0)
+            im2.save(buf, format='JPEG', quality=quality)
+            if len(base64.b64encode(buf.getvalue())) <= max_bytes:
+                im = im2
+                break
+            scale -= 0.1
+
+    # 写临时文件
+    tmp_path = image_path + '.compressed.jpg'
+    with open(tmp_path, 'wb') as f:
+        f.write(buf.getvalue())
+    logger.info(f"[push] 图片已自动压缩 {os.path.getsize(image_path)} -> {os.path.getsize(tmp_path)} bytes")
+    return tmp_path, True
 
 # ========== access_token 缓存（与 server.py 独立，避免循环导入问题）==========
 _access_token = None
@@ -164,7 +224,12 @@ def push_to_group_image(image_path):
     if not os.path.exists(image_path):
         logger.error(f"[push] 图片不存在: {image_path}")
         return {"errcode": -1, "errmsg": "图片不存在"}
+    tmp_compressed = None
     try:
+        # 超过企微 2MB 限制时自动压缩
+        image_path, compressed = _auto_compress_image(image_path)
+        if compressed:
+            tmp_compressed = image_path
         with open(image_path, "rb") as f:
             img_data = f.read()
         img_b64 = base64.b64encode(img_data).decode()
@@ -180,6 +245,12 @@ def push_to_group_image(image_path):
     except Exception as e:
         logger.error(f"[push] 推送图片异常: {e}")
         return {"errcode": -1, "errmsg": str(e)}
+    finally:
+        if tmp_compressed and os.path.exists(tmp_compressed):
+            try:
+                os.remove(tmp_compressed)
+            except Exception:
+                pass
 
 
 def push_to_group_news(title, description, url, pic_url=""):
@@ -302,13 +373,24 @@ def push_image_to_user(userid, image_path):
     :param image_path: 本地图片路径
     :return: API返回结果
     """
-    media_id = upload_media(image_path, media_type="image")
-    if not media_id:
-        return {"errcode": -1, "errmsg": "图片上传失败"}
-    return _appmessage_send(
-        {"msgtype": "image", "image": {"media_id": media_id}},
-        touser=userid
-    )
+    tmp_compressed = None
+    try:
+        image_path, compressed = _auto_compress_image(image_path)
+        if compressed:
+            tmp_compressed = image_path
+        media_id = upload_media(image_path, media_type="image")
+        if not media_id:
+            return {"errcode": -1, "errmsg": "图片上传失败"}
+        return _appmessage_send(
+            {"msgtype": "image", "image": {"media_id": media_id}},
+            touser=userid
+        )
+    finally:
+        if tmp_compressed and os.path.exists(tmp_compressed):
+            try:
+                os.remove(tmp_compressed)
+            except Exception:
+                pass
 
 
 def push_file_to_user(userid, file_path):

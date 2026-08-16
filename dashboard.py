@@ -178,6 +178,12 @@ tr:hover { background: #162232; }
 .refresh-btn { background: #00b4d8; color: #fff; border: none; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .refresh-btn:hover { background: #0096c7; }
 .auto-badge { font-size: 12px; color: #4ade80; }
+.tabs { display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; }
+.tab-btn { background: #162232; color: #8a9aaa; border: 1px solid #2a3a4a; padding: 10px 24px; border-radius: 10px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all .2s; }
+.tab-btn:hover { color: #e0e0e0; border-color: #00b4d8; }
+.tab-btn.active { background: #00b4d8; color: #fff; border-color: #00b4d8; box-shadow: 0 2px 12px rgba(0,180,216,.25); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
 @media (max-width: 640px) {
   .header h1 { font-size: 18px; }
   .card-value { font-size: 18px; }
@@ -203,21 +209,15 @@ tr:hover { background: #162232; }
     <div class="card"><div class="card-label">待发文件</div><div class="card-value" id="v-pending">0</div></div>
   </div>
 
-  <!-- 消息记录 -->
-  <div class="section">
-    <div class="section-header">
-      <span class="section-title">消息记录</span>
-      <span class="badge" id="msg-count">0 条</span>
-    </div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>时间</th><th>类型</th><th>发送人</th><th>内容预览</th><th>状态</th></tr></thead>
-        <tbody id="msg-table"></tbody>
-      </table>
-    </div>
+  <!-- Tab 菜单 -->
+  <div class="tabs">
+    <button class="tab-btn" data-tab="push" onclick="switchTab('push')">主动推送</button>
+    <button class="tab-btn" data-tab="messages" onclick="switchTab('messages')">消息记录</button>
+    <button class="tab-btn" data-tab="logs" onclick="switchTab('logs')">实时日志</button>
   </div>
 
   <!-- 主动推送 -->
+  <div id="tab-push" class="tab-panel active">
   <div class="section">
     <div class="section-header">
       <span class="section-title">主动推送消息</span>
@@ -237,23 +237,48 @@ tr:hover { background: #162232; }
         <select id="push-format" style="background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;">
           <option value="text">纯文本</option>
           <option value="markdown">Markdown</option>
+          <option value="image">图片</option>
         </select>
       </div>
-      <div style="margin-bottom: 12px;">
+      <div id="push-content-wrap" style="margin-bottom: 12px;">
         <textarea id="push-content" placeholder="输入消息内容..." style="width:100%;min-height:120px;background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:8px;padding:12px;font-size:14px;font-family:inherit;resize:vertical;"></textarea>
+      </div>
+      <div id="push-image-wrap" style="margin-bottom: 12px; display:none;">
+        <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">选择图片</label>
+        <input id="push-image" type="file" accept="image/*" style="background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;max-width:70%;">
+        <div id="push-image-preview" style="margin-top:10px;"></div>
       </div>
       <button class="refresh-btn" style="padding:8px 24px;font-size:14px;" onclick="sendPush()">发送</button>
       <div id="push-result" style="margin-top:10px;font-size:13px;"></div>
     </div>
   </div>
+  </div>
+
+  <!-- 消息记录 -->
+  <div id="tab-messages" class="tab-panel">
+  <div class="section">
+    <div class="section-header">
+      <span class="section-title">消息记录</span>
+      <span class="badge" id="msg-count">0 条</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>时间</th><th>类型</th><th>发送人</th><th>内容预览</th><th>状态</th></tr></thead>
+        <tbody id="msg-table"></tbody>
+      </table>
+    </div>
+  </div>
+  </div>
 
   <!-- 实时日志 -->
+  <div id="tab-logs" class="tab-panel">
   <div class="section">
     <div class="section-header">
       <span class="section-title">实时日志</span>
       <span><span class="auto-badge">5s 自动刷新</span> <button class="refresh-btn" onclick="loadLogs()">刷新</button></span>
     </div>
     <div class="log-box" id="log-box"></div>
+  </div>
   </div>
 
   <div class="footer">企微机器人 Web 管理面板 · 端口 8505</div>
@@ -326,6 +351,12 @@ async function loadLogs() {
     }).join('');
   } catch(e) { console.error(e); }
 }
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + name));
+  if (name === 'messages') loadMessages();
+  if (name === 'logs') loadLogs();
+}
 function loadAll() { loadStatus(); loadMessages(); }
 async function sendPush() {
   const target = document.getElementById('push-target').value;
@@ -334,12 +365,26 @@ async function sendPush() {
   const userid = document.getElementById('push-userid').value;
   const statusEl = document.getElementById('push-status');
   const resultEl = document.getElementById('push-result');
-  if (!content.trim()) { resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>'; return; }
+  if (format === 'image') {
+    const fileInput = document.getElementById('push-image');
+    if (!fileInput.files || fileInput.files.length === 0) {
+      resultEl.innerHTML = '<span style="color:#ef4444;">请先选择图片</span>';
+      return;
+    }
+  } else if (!content.trim()) {
+    resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>';
+    return;
+  }
   statusEl.textContent = '发送中...';
   resultEl.innerHTML = '';
   try {
     const body = { target, format, content };
     if (target === 'user' && userid) body.userid = userid;
+    if (format === 'image') {
+      const file = document.getElementById('push-image').files[0];
+      body.imageData = await readFileAsBase64(file);
+      body.imageName = file.name;
+    }
     const r = await fetch('/api/push', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
     if (d.success) {
@@ -355,11 +400,42 @@ async function sendPush() {
   }
   setTimeout(() => statusEl.textContent = '就绪', 3000);
 }
+function readFileAsBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 document.addEventListener('DOMContentLoaded', function() {
   const targetSel = document.getElementById('push-target');
   const useridInput = document.getElementById('push-userid');
   targetSel.addEventListener('change', function() {
     useridInput.style.display = this.value === 'user' ? 'inline' : 'none';
+  });
+  const formatSel = document.getElementById('push-format');
+  const contentWrap = document.getElementById('push-content-wrap');
+  const imageWrap = document.getElementById('push-image-wrap');
+  const imageInput = document.getElementById('push-image');
+  const imagePreview = document.getElementById('push-image-preview');
+  function onFormatChange() {
+    const isImage = formatSel.value === 'image';
+    contentWrap.style.display = isImage ? 'none' : '';
+    imageWrap.style.display = isImage ? '' : 'none';
+  }
+  formatSel.addEventListener('change', onFormatChange);
+  onFormatChange();
+  imageInput.addEventListener('change', function() {
+    if (this.files && this.files[0]) {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        imagePreview.innerHTML = '<img src="' + e.target.result + '" style="max-width:200px;max-height:200px;border-radius:8px;border:1px solid #2a3a4a;">';
+      };
+      reader.readAsDataURL(this.files[0]);
+    } else {
+      imagePreview.innerHTML = '';
+    }
   });
 });
 loadAll();
@@ -428,8 +504,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             fmt = req.get('format', 'text')
             content = req.get('content', '')
             userid = req.get('userid', '')
+            image_data = req.get('imageData', '')
+            image_name = req.get('imageName', 'image.png')
 
-            if not content.strip():
+            if fmt == 'image':
+                if not image_data:
+                    self._serve_json({"success": False, "error": "图片数据不能为空"})
+                    return
+            elif not content.strip():
                 self._serve_json({"success": False, "error": "消息内容不能为空"})
                 return
 
@@ -440,6 +522,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if target == 'group':
                 if fmt == 'markdown':
                     result = _push.push_to_group_markdown(content)
+                elif fmt == 'image':
+                    image_path = self._save_temp_image(image_data, image_name)
+                    if not image_path:
+                        self._serve_json({"success": False, "error": "图片保存失败"})
+                        return
+                    try:
+                        result = _push.push_to_group_image(image_path)
+                    finally:
+                        self._remove_temp_image(image_path)
                 else:
                     result = _push.push_to_group(content)
             elif target == 'user':
@@ -448,6 +539,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     return
                 if fmt == 'markdown':
                     result = _push.push_markdown_to_user(userid, content)
+                elif fmt == 'image':
+                    image_path = self._save_temp_image(image_data, image_name)
+                    if not image_path:
+                        self._serve_json({"success": False, "error": "图片保存失败"})
+                        return
+                    try:
+                        result = _push.push_image_to_user(userid, image_path)
+                    finally:
+                        self._remove_temp_image(image_path)
                 else:
                     result = _push.push_to_user(userid, content)
             else:
@@ -461,6 +561,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._serve_json({"success": False, "error": f"推送失败: {err}"})
         except Exception as e:
             self._serve_json({"success": False, "error": f"异常: {str(e)}"})
+
+    def _save_temp_image(self, image_data, image_name):
+        """把 base64 图片数据保存为临时文件"""
+        import base64
+        try:
+            ext = os.path.splitext(image_name)[1].lower() or '.png'
+            if ext not in ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'):
+                ext = '.png'
+            temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
+            os.makedirs(temp_dir, exist_ok=True)
+            path = os.path.join(temp_dir, f"push_{int(time.time()*1000)}{ext}")
+            with open(path, 'wb') as f:
+                f.write(base64.b64decode(image_data))
+            return path
+        except Exception as e:
+            logger.error(f"[dashboard] 保存临时图片失败: {e}")
+            return None
+
+    def _remove_temp_image(self, path):
+        """删除临时图片文件"""
+        try:
+            if path and os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
 
     def _serve_html(self):
         data = HTML_PAGE.encode('utf-8')

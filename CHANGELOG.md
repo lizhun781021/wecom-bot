@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '1716aa0f-fb9d-45a3-8219-263646f82ccd'
-  PropagateID: '1716aa0f-fb9d-45a3-8219-263646f82ccd'
-  ReservedCode1: 'b9daf286-7b3f-41c7-9c28-a746ee7aa4e1'
-  ReservedCode2: 'b9daf286-7b3f-41c7-9c28-a746ee7aa4e1'
+  ProduceID: 'eb9e199c-babd-45fd-8f7b-7bcecd79b36a'
+  PropagateID: 'eb9e199c-babd-45fd-8f7b-7bcecd79b36a'
+  ReservedCode1: '79a5d947-2803-4e0d-aa3f-505b5eacc72c'
+  ReservedCode2: '79a5d947-2803-4e0d-aa3f-505b5eacc72c'
 ---
 
 # 更新日志
@@ -15,6 +15,28 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.3.0 (2026-08-16)
+
+新增 Web 面板**主动推送图片**能力（群聊 + 个人 1v1），并重构面板为 **Tab 三菜单布局**。
+
+### 新增功能
+- **面板支持图片推送**（dashboard.py）：消息格式新增「图片」选项，支持本地选图、base64 上传、前端预览
+  - 推送目标支持群聊（Webhook）和个人（应用消息，自动 upload_media 拿 media_id）
+  - 临时文件自动清理（temp_uploads/）
+- **图片自动压缩**（push.py）：企微群机器人限制图片 base64 后 ≤2MB（超出报 40009 invalid image size）
+  - `_auto_compress_image()`：超限自动降 JPEG 质量（88→40）→ 不足再等比缩分辨率（0.9→0.3）
+  - 群推送和个人推送两条链路均生效，压缩临时文件自动清理
+- **面板 Tab 布局**：主动推送 / 消息记录 / 实时日志 三个菜单页签，**默认选中「主动推送」**
+  - 状态卡片保持常驻顶部
+
+### Bug 修复
+- 修复 dashboard 后端清理方法名不一致（`_cleanup_temp_image` vs `_remove_temp_image`）导致的 AttributeError
+
+### 依赖
+- 新增 Pillow（图片压缩）：`venv/bin/pip install Pillow`
 
 ---
 
