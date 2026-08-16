@@ -14,6 +14,7 @@ images/
 pending_files.json
 name_cache.json
 peican_sheet_cache.json
+qq_status.json
 
 # 面板推送临时图片
 temp_uploads/

@@ -27,6 +27,19 @@ import config
 import dashboard
 import wecom_api
 
+# ========== 禁用环境代理 ==========
+# 本机进程常从 shell/launchd 继承 http_proxy/HTTPS_PROXY（如 127.0.0.1:7892），
+# requests 默认尊重环境代理，会把访问本机 127.0.0.1:8088 的 AI 请求也转发给代理，
+# 导致请求挂起永不返回（QQ/企微消息均受影响）。这里在 import 早期统一清除。
+os.environ.pop("http_proxy", None)
+os.environ.pop("https_proxy", None)
+os.environ.pop("HTTP_PROXY", None)
+os.environ.pop("HTTPS_PROXY", None)
+os.environ.pop("all_proxy", None)
+os.environ.pop("ALL_PROXY", None)
+# 注意：requests 会缓存环境代理，必须在其他模块 import requests 前清理；
+# 若后续 import 顺序变化，可在 call_teleagent 内再强制 session.trust_env=False。
+
 # ========== Dashboard 管理面板端口 ==========
 DASHBOARD_PORT = 8505
 
@@ -309,7 +322,7 @@ def get_user_name(userid):
 
 
 def call_teleagent(prompt, timeout=1800, session_title=None):
-    """通过 OpenAI 兼容代理调用 TeleAgent AI 能力，返回回复文本"""
+    """调用 TeleAgent AI 能力，返回回复文本"""
     try:
         headers = {
             "Content-Type": "application/json",
@@ -325,7 +338,11 @@ def call_teleagent(prompt, timeout=1800, session_title=None):
         # 传会话标题，让TeleAgent界面上显示调用人+技能
         if session_title:
             data["session_title"] = session_title
-        resp = requests.post(
+        # 关键：必须绕过环境代理。本机 AI 请求只能直连 127.0.0.1:8088，
+        # 若被 http_proxy 劫持会转发到 7892 等外网代理导致挂起永不返回。
+        _session = requests.Session()
+        _session.trust_env = False
+        resp = _session.post(
             config.TELEAGENT_PROXY_URL,
             headers=headers,
             json=data,

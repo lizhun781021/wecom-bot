@@ -87,14 +87,35 @@ QQ_STATUS = {
 QQ_SESSION = {"group": {}, "user": {}}
 _QQ_CLIENT = None  # 运行时挂载的 botpy Client（供主动推送）
 
+# 状态落地文件（dashboard 等跨进程读取用）
+QQ_STATUS_FILE = os.path.join(PROJECT_ROOT, "qq_status.json")
+
+
+def _persist_status():
+    """把状态+会话写入 qq_status.json，供 dashboard（独立进程）读取"""
+    try:
+        payload = {
+            "status": dict(QQ_STATUS),
+            "session": {
+                "group": {k: v for k, v in QQ_SESSION.get("group", {}).items()},
+                "user": {k: v for k, v in QQ_SESSION.get("user", {}).items()},
+            },
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(QQ_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"[QQ] 状态落盘失败: {e}")
+
 
 def _remember_session(kind: str, openid: str):
-    """记录最近活跃会话（内存，最多保留 100 个）"""
+    """记录最近活跃会话（内存，最多保留 100 个），并同步落盘"""
     s = QQ_SESSION.setdefault(kind, {})
     s[openid] = time.time()
     if len(s) > 100:
         for k in sorted(s, key=s.get)[: len(s) - 100]:
             s.pop(k, None)
+    _persist_status()
 
 
 def qq_push_to_group(group_openid: str, content: str):
@@ -158,6 +179,7 @@ def _update_status(**kwargs):
     for k, v in kwargs.items():
         if k in QQ_STATUS:
             QQ_STATUS[k] = v
+    _persist_status()
 
 
 def _download_attachment(url: str, save_dir: str, prefix: str) -> str | None:
@@ -300,7 +322,7 @@ class QQOfficialClient(botpy.Client):
     async def on_group_at_message_create(self, message: GroupMessage):
         """群聊内 @ 机器人 触发"""
         try:
-            QQ_STATUS["total_received"] += 1
+            _update_status(total_received=QQ_STATUS["total_received"] + 1)
             content = (message.content or "").strip()
             # 去掉 @机器人 前缀（官方消息 content 含 <@!openid> 或 @机器人）
             content = re.sub(r"<@[^>]+>", "", content).strip()
@@ -335,7 +357,7 @@ class QQOfficialClient(botpy.Client):
     async def on_c2c_message_create(self, message: C2CMessage):
         """处理单聊（私聊）消息"""
         try:
-            QQ_STATUS["total_received"] += 1
+            _update_status(total_received=QQ_STATUS["total_received"] + 1)
             content = (message.content or "").strip()
             from_user = getattr(message.author, "user_openid", None) or "qq_c2c_user"
             _update_status(last_message_at=time.strftime("%H:%M:%S"))
@@ -367,6 +389,55 @@ class QQOfficialClient(botpy.Client):
             logger.error(f"[QQ] on_c2c_message_create 异常: {e}")
 
 
+# ========== 本机内部 HTTP 推送端点（供 dashboard 跨进程调用） ==========
+# dashboard（8505）与 QQ 适配器是独立进程，无法直接调用内存中的 _QQ_CLIENT。
+# 这里在本机 127.0.0.1:18506 提供内部推送接口，dashboard 收到 QQ 推送请求后转发到这里。
+QQ_PUSH_PORT = 18506
+
+
+def _start_internal_http():
+    """启动内部 HTTP 服务（仅绑定 127.0.0.1，不对外）"""
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class _QQPushHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                target = body.get("target", "")
+                content = body.get("content", "")
+                openid = body.get("openid", "")
+                if target == "group":
+                    ok = qq_push_to_group(openid, content)
+                elif target == "user":
+                    ok = qq_push_to_user(openid, content)
+                else:
+                    ok = False
+                resp = json.dumps({"success": ok}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+            except Exception as e:
+                resp = json.dumps({"success": False, "error": str(e)}).encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(resp)))
+                self.end_headers()
+                self.wfile.write(resp)
+
+        def log_message(self, format, *args):
+            pass  # 静默，不打印内部接口日志
+
+    try:
+        httpd = HTTPServer(("127.0.0.1", QQ_PUSH_PORT), _QQPushHandler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        logger.info(f"[QQ] 内部推送端点已启动: http://127.0.0.1:{QQ_PUSH_PORT}")
+    except Exception as e:
+        logger.error(f"[QQ] 内部推送端点启动失败: {e}")
+
+
 # ========== 启动入口 ==========
 
 # READY 事件探针：包装 client.ws_dispatch，捕获 botpy 所有下行事件分发。
@@ -389,7 +460,7 @@ def _install_ready_probe(client, loop):
     def _watchdog():
         time.sleep(30)
         if not QQ_STATUS.get("connected"):
-            QQ_STATUS["last_error"] = "30秒内未收到 READY 事件，连接可能异常"
+            _update_status(last_error="30秒内未收到 READY 事件，连接可能异常")
             logger.error(QQ_STATUS["last_error"])
     threading.Thread(target=_watchdog, daemon=True).start()
 
@@ -402,6 +473,9 @@ def start_qq_bot():
     if not config.QQ_APPID or not config.QQ_SECRET:
         logger.error("[QQ] 未配置 QQ_APPID / QQ_SECRET，请在 config.py 填写")
         return
+
+    # 先启动内部推送端点（不依赖 botpy 连接，无连接时优雅返回 False）
+    _start_internal_http()
 
     global _QQ_LOOP, _QQ_CLIENT
     _QQ_LOOP = asyncio.new_event_loop()

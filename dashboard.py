@@ -18,6 +18,9 @@ from urllib.parse import urlparse, parse_qs
 # 项目目录
 PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(PROJECT_DIR, 'wecom-bot.log')
+QQ_STATUS_FILE = os.path.join(PROJECT_DIR, 'qq_status.json')
+QQ_LOG_FILE = os.path.join(PROJECT_DIR, 'qq-adapter-app.log')
+QQ_PUSH_PORT = 18506  # QQ 适配器内部推送端点（与 qq_official_adapter.py 保持一致）
 
 # ========== 共享状态（由 server.py 写入，dashboard 读取）==========
 # 消息记录列表，每条: {"time": "10:30:45", "type": "text/image/mixed", "user": "李准", "preview": "...", "status": "处理中/已回复/失败"}
@@ -113,10 +116,53 @@ def get_bot_status():
     return s
 
 
+def get_qq_status():
+    """读取 QQ 适配器状态（跨进程，从 qq_status.json 读取）"""
+    default = {
+        "running": False,
+        "connected": False,
+        "last_message_at": "",
+        "last_error": "",
+        "total_received": 0,
+        "total_replied": 0,
+        "updated_at": "",
+        "session": {"group": {}, "user": {}},
+    }
+    try:
+        if not os.path.exists(QQ_STATUS_FILE):
+            return default
+        with open(QQ_STATUS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        result = dict(default)
+        result.update(data.get("status", {}))
+        result["session"] = data.get("session", {"group": {}, "user": {}})
+        result["updated_at"] = data.get("updated_at", "")
+        return result
+    except Exception:
+        return default
+
+
 def get_recent_logs(n=50):
-    """获取最近N行日志"""
+    """获取最近N行日志（内存 + QQ 适配器日志文件）"""
     with RECENT_LOGS_LOCK:
-        return list(reversed(RECENT_LOGS[-n:]))
+        lines = list(reversed(RECENT_LOGS[-n:]))
+    # 合并 QQ 适配器日志文件尾部（独立进程，通过文件共享）
+    qq_lines = _read_qq_log_tail(n)
+    merged = qq_lines + lines
+    return merged[-n:]
+
+
+def _read_qq_log_tail(n=30):
+    """读取 QQ 适配器日志文件末尾 N 行（带 [QQ] 前缀便于区分）"""
+    try:
+        if not os.path.exists(QQ_LOG_FILE):
+            return []
+        with open(QQ_LOG_FILE, 'r', encoding='utf-8') as f:
+            all_lines = f.readlines()
+        tail = all_lines[-n:]
+        return [ln.rstrip('\n') for ln in tail if ln.strip()]
+    except Exception:
+        return []
 
 
 def get_message_records(n=50):
@@ -131,7 +177,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>企微机器人管理面板</title>
+<title>企微+QQ机器人管理面板</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #0f1923; color: #e0e0e0; min-height: 100vh; }
@@ -165,6 +211,7 @@ tr:hover { background: #162232; }
 .tag-file { background: #3b3b1e; color: #fbbf24; }
 .tag-voice { background: #1e2b3b; color: #67e8f9; }
 .tag-video { background: #3b1e1e; color: #f87171; }
+.tag-qq { background: #1e3a2f; color: #34d399; }
 .status-ok { color: #4ade80; }
 .status-processing { color: #fbbf24; }
 .status-fail { color: #ef4444; }
@@ -196,10 +243,11 @@ tr:hover { background: #162232; }
 </head>
 <body>
 <div class="header">
-  <h1><span id="dot" class="status-dot status-offline"></span>企微机器人管理面板</h1>
+  <h1><span id="dot" class="status-dot status-offline"></span>企微+QQ机器人管理面板</h1>
 </div>
 <div class="container">
-  <!-- 状态卡片 -->
+  <!-- 状态卡片：企微通道 -->
+  <div class="section-header" style="border:none;padding:0 0 8px 0;"><span class="section-title">企微通道</span></div>
   <div class="grid" id="statusGrid">
     <div class="card"><div class="card-label">连接状态</div><div class="card-value" id="v-conn">离线</div></div>
     <div class="card"><div class="card-label">运行时长</div><div class="card-value blue" id="v-uptime">-</div></div>
@@ -207,6 +255,17 @@ tr:hover { background: #162232; }
     <div class="card"><div class="card-label">重连次数</div><div class="card-value yellow" id="v-reconnect">0</div></div>
     <div class="card"><div class="card-label">收到消息</div><div class="card-value green" id="v-msgs">0</div></div>
     <div class="card"><div class="card-label">待发文件</div><div class="card-value" id="v-pending">0</div></div>
+  </div>
+
+  <!-- 状态卡片：QQ通道 -->
+  <div class="section-title" style="margin-top:4px;padding:0 0 8px 0;"><span class="section-title">QQ通道</span></div>
+  <div class="grid" id="qqStatusGrid">
+    <div class="card"><div class="card-label">连接状态</div><div class="card-value" id="q-conn">离线</div></div>
+    <div class="card"><div class="card-label">收到消息</div><div class="card-value green" id="q-msgs">0</div></div>
+    <div class="card"><div class="card-label">已回复</div><div class="card-value green" id="q-replies">0</div></div>
+    <div class="card"><div class="card-label">最后消息</div><div class="card-value blue" id="q-last">-</div></div>
+    <div class="card"><div class="card-label">最近群会话</div><div class="card-value yellow" id="q-groups">0</div></div>
+    <div class="card"><div class="card-label">最近单聊会话</div><div class="card-value yellow" id="q-users">0</div></div>
   </div>
 
   <!-- Tab 菜单 -->
@@ -227,10 +286,15 @@ tr:hover { background: #162232; }
       <div style="margin-bottom: 12px;">
         <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">推送目标</label>
         <select id="push-target" style="background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;">
-          <option value="group">群聊 (Webhook)</option>
-          <option value="user">个人 (应用消息)</option>
+          <option value="group">企微群聊 (Webhook)</option>
+          <option value="user">企微个人 (应用消息)</option>
+          <option value="qq_group">QQ群 (官方机器人)</option>
+          <option value="qq_user">QQ私聊 (官方机器人)</option>
         </select>
-        <input id="push-userid" type="text" placeholder="userid（个人模式填）" style="display:none;background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;margin-left:10px;width:240px;">
+        <input id="push-userid" type="text" placeholder="userid / QQ openid（个人/私聊模式填）" style="display:none;background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;margin-left:10px;width:280px;">
+        <select id="push-qq-session" style="display:none;background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;margin-left:10px;max-width:260px;" onchange="document.getElementById('push-userid').value=this.value">
+          <option value="">-- 最近会话快捷选择 --</option>
+        </select>
       </div>
       <div style="margin-bottom: 12px;">
         <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">消息格式</label>
@@ -263,7 +327,7 @@ tr:hover { background: #162232; }
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>时间</th><th>类型</th><th>发送人</th><th>内容预览</th><th>状态</th></tr></thead>
+        <thead><tr><th>时间</th><th>来源</th><th>类型</th><th>发送人</th><th>内容预览</th><th>状态</th></tr></thead>
         <tbody id="msg-table"></tbody>
       </table>
     </div>
@@ -317,6 +381,24 @@ async function loadStatus() {
     document.getElementById('v-msgs').textContent = d.total_messages;
     document.getElementById('v-pending').textContent = d.pending_files;
   } catch(e) { console.error(e); }
+  try {
+    const r = await fetch('/api/qqstatus');
+    const d = await r.json();
+    const qconn = document.getElementById('q-conn');
+    if (d.connected) {
+      qconn.textContent = '在线'; qconn.className = 'card-value green';
+    } else if (d.running) {
+      qconn.textContent = '连接中'; qconn.className = 'card-value yellow';
+    } else {
+      qconn.textContent = '离线'; qconn.className = 'card-value red';
+    }
+    document.getElementById('q-msgs').textContent = d.total_received;
+    document.getElementById('q-replies').textContent = d.total_replied;
+    document.getElementById('q-last').textContent = d.last_message_at || '-';
+    document.getElementById('q-groups').textContent = Object.keys(d.session.group || {}).length;
+    document.getElementById('q-users').textContent = Object.keys(d.session.user || {}).length;
+    if (d.last_error) console.warn('QQ:', d.last_error);
+  } catch(e) { console.error(e); }
 }
 async function loadMessages() {
   try {
@@ -325,11 +407,12 @@ async function loadMessages() {
     document.getElementById('msg-count').textContent = d.length + ' 条';
     const tbody = document.getElementById('msg-table');
     if (d.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#5a6a7a;padding:30px;">暂无消息记录</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#5a6a7a;padding:30px;">暂无消息记录</td></tr>';
       return;
     }
     tbody.innerHTML = d.map(m => `<tr>
       <td>${m.time}</td>
+      <td><span class="tag ${m.source === 'qq' ? 'tag-qq' : 'tag-text'}">${m.source === 'qq' ? 'QQ' : '企微'}</span></td>
       <td><span class="tag ${tagClass(m.type)}">${m.type}</span></td>
       <td>${m.user}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.preview}</td>
@@ -365,7 +448,17 @@ async function sendPush() {
   const userid = document.getElementById('push-userid').value;
   const statusEl = document.getElementById('push-status');
   const resultEl = document.getElementById('push-result');
-  if (format === 'image') {
+  const isQq = target === 'qq_group' || target === 'qq_user';
+  if (isQq) {
+    if (!userid.trim()) {
+      resultEl.innerHTML = '<span style="color:#ef4444;">请填写 QQ 群的 group_openid / 用户 openid（或从最近会话选择）</span>';
+      return;
+    }
+    if (!content.trim()) {
+      resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>';
+      return;
+    }
+  } else if (format === 'image') {
     const fileInput = document.getElementById('push-image');
     if (!fileInput.files || fileInput.files.length === 0) {
       resultEl.innerHTML = '<span style="color:#ef4444;">请先选择图片</span>';
@@ -379,7 +472,7 @@ async function sendPush() {
   resultEl.innerHTML = '';
   try {
     const body = { target, format, content };
-    if (target === 'user' && userid) body.userid = userid;
+    if ((target === 'user' || isQq) && userid) body.userid = userid;
     if (format === 'image') {
       const file = document.getElementById('push-image').files[0];
       body.imageData = await readFileAsBase64(file);
@@ -411,9 +504,22 @@ function readFileAsBase64(file) {
 document.addEventListener('DOMContentLoaded', function() {
   const targetSel = document.getElementById('push-target');
   const useridInput = document.getElementById('push-userid');
-  targetSel.addEventListener('change', function() {
-    useridInput.style.display = this.value === 'user' ? 'inline' : 'none';
-  });
+  const qqSessionSel = document.getElementById('push-qq-session');
+  function refreshTargetUI() {
+    const v = targetSel.value;
+    const isQq = v === 'qq_group' || v === 'qq_user';
+    const needsId = v === 'user' || isQq;
+    useridInput.style.display = needsId ? 'inline' : 'none';
+    qqSessionSel.style.display = isQq ? 'inline' : 'none';
+    if (isQq) {
+      // QQ 官方机器人仅支持纯文本，锁定格式并隐藏图片上传
+      formatSel.value = 'text';
+      onFormatChange();
+      loadQQSessions();
+    }
+  }
+  targetSel.addEventListener('change', refreshTargetUI);
+  refreshTargetUI();
   const formatSel = document.getElementById('push-format');
   const contentWrap = document.getElementById('push-content-wrap');
   const imageWrap = document.getElementById('push-image-wrap');
@@ -438,6 +544,26 @@ document.addEventListener('DOMContentLoaded', function() {
     }
   });
 });
+async function loadQQSessions() {
+  try {
+    const r = await fetch('/api/qqstatus');
+    const d = await r.json();
+    const sel = document.getElementById('push-qq-session');
+    const target = document.getElementById('push-target').value;
+    const isGroup = target === 'qq_group';
+    const list = isGroup ? (d.session.group || {}) : (d.session.user || {});
+    const opts = Object.entries(list)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([k, ts]) => {
+        const t = new Date(ts * 1000);
+        const hh = String(t.getHours()).padStart(2, '0');
+        const mm = String(t.getMinutes()).padStart(2, '0');
+        return '<option value="' + k + '">' + k.slice(0, 12) + ' (' + hh + ':' + mm + ')</option>';
+      });
+    sel.innerHTML = '<option value="">-- 最近会话快捷选择 --</option>' + opts.join('');
+  } catch(e) { console.error(e); }
+}
 loadAll();
 loadLogs();
 setInterval(loadAll, 5000);
@@ -457,6 +583,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_html()
         elif path == '/api/status':
             self._serve_json(get_bot_status())
+        elif path == '/api/qqstatus':
+            self._serve_json(get_qq_status())
         elif path == '/api/messages':
             self._serve_json(get_message_records(50))
         elif path == '/api/logs':
@@ -488,10 +616,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "webhook_configured": bool(getattr(_cfg, 'WEBHOOK_URL', '')),
                 "agent_id": getattr(_cfg, 'AGENT_ID', 0),
                 "corp_id": getattr(_cfg, 'CORP_ID', ''),
-                "known_users": getattr(_cfg, 'WECOM_USER_MAP', {})
+                "known_users": getattr(_cfg, 'WECOM_USER_MAP', {}),
+                "qq_enabled": bool(getattr(_cfg, 'QQ_ENABLED', False)),
             }
         except Exception:
-            return {"webhook_configured": False, "agent_id": 0}
+            return {"webhook_configured": False, "agent_id": 0, "qq_enabled": False}
 
     def _handle_push(self):
         """处理推送请求"""
@@ -517,6 +646,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             # 延迟导入push模块，避免循环依赖
             import push as _push
+
+            # QQ 推送：通过本机内部端点转发给 QQ 适配器进程（跨进程调用）
+            if target in ('qq_group', 'qq_user'):
+                if not userid.strip():
+                    self._serve_json({"success": False, "error": "QQ推送需要填写 group_openid / openid"})
+                    return
+                ok, err = self._forward_qq_push(target, userid, content)
+                if ok:
+                    self._serve_json({"success": True, "detail": f"QQ推送成功 ({target})"})
+                else:
+                    self._serve_json({"success": False, "error": f"QQ推送失败: {err}"})
+                return
 
             result = None
             if target == 'group':
@@ -586,6 +727,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 os.remove(path)
         except Exception:
             pass
+
+    def _forward_qq_push(self, target, openid, content):
+        """通过 QQ 适配器内部端点转发推送（跨进程）"""
+        import urllib.request
+        try:
+            # QQ 官方机器人暂不支持图片直接下发，仅支持文本
+            payload = json.dumps({
+                "target": "group" if target == 'qq_group' else "user",
+                "openid": openid,
+                "content": content,
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{QQ_PUSH_PORT}/push",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                return bool(data.get('success')), data.get('error', '') or ''
+        except Exception as e:
+            return False, str(e)
 
     def _serve_html(self):
         data = HTML_PAGE.encode('utf-8')

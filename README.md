@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '37ab16e2-0aea-4a29-aaae-1e81175f49be'
-  PropagateID: '37ab16e2-0aea-4a29-aaae-1e81175f49be'
-  ReservedCode1: '69ac0f7b-3b02-415a-8621-7b268d2cfe88'
-  ReservedCode2: '69ac0f7b-3b02-415a-8621-7b268d2cfe88'
+  ProduceID: '735222de-e3ee-4887-999a-3946a6282ca3'
+  PropagateID: '735222de-e3ee-4887-999a-3946a6282ca3'
+  ReservedCode1: 'e678bec6-5708-4b9f-965c-9a00a1059929'
+  ReservedCode2: 'e678bec6-5708-4b9f-965c-9a00a1059929'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -29,7 +29,38 @@ v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送�
 【接收】QQ群聊 @机器人 / 单聊 → qq-botpy WebSocket → AI处理 → 自动回复（v1.4.0）
 【推送】终端/脚本/Web面板 → Webhook API → 主动发消息到群聊
 【推送】TeleAgent → qq_push_* → 主动回消息到 QQ（v1.4.0 双向桥）
+【管理】Web面板（8505）→ 企微/QQ 双通道状态 + 主动推送（v1.5.0 支持 QQ）
 【后处理】AI配餐回复 → 自动写台账+建待办+生成文档 → 群里发通知
+```
+
+## QQ 官方机器人（v1.4.0）
+```
+独立进程运行（与企微主服务互不干扰）：
+    python qq_official_adapter.py
+
+接入：腾讯官方 qq-botpy SDK（WebSocket 长连接，无需公网 IP）
+监听：群@消息（on_group_at_message_create）+ 单聊消息（on_c2c_message_create）
+处理：复用 server.py 管线 → 同一 8088 代理 → 同一套河南标准化技能
+回复：QQ 官方 API（post_group_message / post_c2c_message）
+
+配置（config.py）：
+    QQ_ENABLED = True
+    QQ_APPID  = "开放平台审核通过后的 AppID"
+    QQ_SECRET = "AppSecret"
+
+先到 q.qq.com 申请官方机器人（需审核），拿到 AppID/Secret 后填入即可启用
+```
+
+## 管理面板（v1.5.0 双通道）
+```
+Web 面板 http://127.0.0.1:8505 支持「企微通道 + QQ通道」双通道管理：
+  · 状态卡片：企微（连接/心跳/重连/消息数）+ QQ（连接/收/回/最近会话）
+  · 消息记录：区分来源（企微 / QQ 标签）
+  · 主动推送：企微群/个人 + QQ群/私聊（QQ 自动加载最近会话快捷选择，仅支持文本）
+  · 实时日志：企微日志 + QQ 适配器日志（[QQ] 前缀）合并展示
+
+跨进程说明：dashboard（8505）与 QQ 适配器为独立进程，
+QQ 主动推送经本机内部端点 127.0.0.1:18506 转发（仅回环，不对外暴露）。
 ```
 
 ## QQ 官方机器人（v1.4.0）
@@ -70,6 +101,7 @@ v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.5.0 | 2026-08-16 | 管理面板双通道：QQ状态卡片+消息来源列+QQ主动推送+日志合并 |
 | v1.4.0 | 2026-08-16 | QQ官方机器人接入+TeleAgent双向桥（主动推送）+READY探针修复 |
 | v1.3.0 | 2026-08-16 | 面板图片推送+自动压缩（≤2MB）+Tab三菜单布局 |
 | v1.2.0 | 2026-08-16 | AI配餐后处理：台账表格+跟进待办+企微文档 |
@@ -88,8 +120,8 @@ v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送�
 | `server.py` | 机器人主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传、配餐后处理） |
 | `wecom_api.py` | 企微文档/表格/待办 API 封装（通过 wecom-cli 调用） |
 | `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送，图片超2MB自动压缩） |
-| `dashboard.py` | Web管理面板（端口8505，状态监控+主动推送+消息记录+实时日志，Tab菜单） |
-| `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送，v1.4.0 新增） |
+| `dashboard.py` | Web管理面板（端口8505，企微+QQ双通道状态监控+主动推送+消息记录+实时日志，Tab菜单，v1.5.0 支持 QQ） |
+| `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送 + 内部推送端点18506，v1.4.0 新增） |
 | `config.py` | 配置文件（**已加入.gitignore，不上传GitHub**） |
 | `config_example.py` | 配置模板（脱敏样例，复制为config.py后填入真实凭证） |
 | `peican_sheet_cache.json` | 配餐台账表格 docid/sheet_id 缓存 |

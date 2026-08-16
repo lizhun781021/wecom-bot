@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'cef3671f-b945-4dd6-8075-663b576d8940'
-  PropagateID: 'cef3671f-b945-4dd6-8075-663b576d8940'
-  ReservedCode1: '7dcbb3f3-e482-44aa-8b73-888aee7a018d'
-  ReservedCode2: '7dcbb3f3-e482-44aa-8b73-888aee7a018d'
+  ProduceID: '38048970-d15c-42d8-9a39-8d4bd3b6b2a8'
+  PropagateID: '38048970-d15c-42d8-9a39-8d4bd3b6b2a8'
+  ReservedCode1: 'c6495138-9124-4b49-b390-9dc69af3ff2e'
+  ReservedCode2: 'c6495138-9124-4b49-b390-9dc69af3ff2e'
 ---
 
 # 更新日志
@@ -15,6 +15,30 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.5.0 (2026-08-16)
+
+**管理面板接入 QQ 通道**：dashboard 升级为「企微+QQ」双通道管理，支持查看 QQ 状态、按来源查看消息记录、向 QQ 群/私聊主动推送。
+
+### 新增功能
+- **面板 QQ 状态卡片**（dashboard.py）：页面顶部新增「QQ通道」独立卡片区，实时显示连接状态、收到/回复消息数、最后消息时间、最近群会话/单聊会话数
+- **消息记录来源列**：表格新增「来源」列，QQ 消息绿色 `QQ` 标签，企微消息 `企微` 标签
+- **主动推送支持 QQ 目标**：推送目标新增「QQ群 (官方机器人)」「QQ私聊 (官方机器人)」
+  - 自动加载最近 QQ 会话下拉（group_openid / user_openid 快捷选择）
+  - QQ 官方机器人仅支持纯文本，切换目标自动锁定文本格式并隐藏图片上传
+- **跨进程推送链路**：dashboard（8505）与 QQ 适配器独立进程，通过本机内部端点 `127.0.0.1:18506` 转发推送（`qq_official_adapter.py` 内置轻量 HTTP 服务，仅绑定 127.0.0.1）
+- **实时日志合并**：日志页签同时展示企微日志与 `qq-adapter-app.log`（QQ 日志带 `[QQ]` 前缀）
+- **`/api/qqstatus` 端点**：面板前端轮询读取 QQ 状态（跨进程读取 `qq_status.json`）
+
+### Bug 修复
+- 修复 QQ 适配器多实例进程并存问题（旧进程无内部端点，新代码需干净重启）
+- `_get_push_config` 补充 `qq_enabled` 配置项
+
+### 说明
+- QQ 适配器运行方式不变：`venv/bin/python qq_official_adapter.py`（建议加入 launchd 开机自启）
+- 内部推送端点 `QQ_PUSH_PORT=18506` 仅监听本机回环地址，不对外暴露
 
 ---
 
