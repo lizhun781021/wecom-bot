@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'eb9e199c-babd-45fd-8f7b-7bcecd79b36a'
-  PropagateID: 'eb9e199c-babd-45fd-8f7b-7bcecd79b36a'
-  ReservedCode1: '79a5d947-2803-4e0d-aa3f-505b5eacc72c'
-  ReservedCode2: '79a5d947-2803-4e0d-aa3f-505b5eacc72c'
+  ProduceID: 'cef3671f-b945-4dd6-8075-663b576d8940'
+  PropagateID: 'cef3671f-b945-4dd6-8075-663b576d8940'
+  ReservedCode1: '7dcbb3f3-e482-44aa-8b73-888aee7a018d'
+  ReservedCode2: '7dcbb3f3-e482-44aa-8b73-888aee7a018d'
 ---
 
 # 更新日志
@@ -15,6 +15,41 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.4.0 (2026-08-16)
+
+新增 **QQ 官方机器人适配器**（qq_official_adapter.py），将 QQ 群聊（@触发）与单聊消息接入 wecom-bot 统一 AI 处理管线。
+
+### 新增功能
+- **QQ 官方机器人接入**（基于腾讯官方 qq-botpy SDK）：
+  - `qq_official_adapter.py`：监听群@消息（`on_group_at_message_create`）与单聊消息（`on_c2c_message_create`）
+  - 复用 `server.py` 现有管线（`call_teleagent` / `build_prompt` / `extract_file_paths` / `post_process_actions`），同一 8088 代理、同一套河南标准化技能
+  - 图片/附件自动下载到本地并交给 AI 分析（复用 IMAGE_SAVE_DIR / FILE_SAVE_DIR）
+  - 回复走 QQ 官方 API（`post_group_message` / `post_c2c_message`），超长自动截断
+  - 与企微长连接互不干扰，独立进程运行：`python qq_official_adapter.py`
+- **配置项**（config.py）：新增 `QQ_ENABLED` / `QQ_APPID` / `QQ_SECRET` / `QQ_USER_MAP`，默认关闭，申请审核通过后填入即可启用
+- **运行状态**：`QQ_STATUS` 可被 dashboard 或外部查询
+- **TeleAgent 双向桥（主动推送）**：
+  - `qq_push_to_group(group_openid, text)` / `qq_push_to_user(openid, text)` / `qq_push_reply("group:xxx"|"user:xxx", text)`
+  - 自动记录最近活跃会话（QQ_SESSION），支持 TeleAgent 侧主动向 QQ 回消息/提问
+  - 与企微 push.py 对称，可被外部脚本/定时任务复用
+
+### Bug 修复
+- **on_ready 疑似不触发问题**：实为 botpy 在 import 时执行 `logging.basicConfig()`（root 默认 WARNING）导致 `server.logger` 的 INFO 日志被过滤，造成"回调未执行"假象
+  - 适配器内显式 `logger.setLevel(INFO)` + 独立 StreamHandler/FileHandler（qq-adapter-app.log），日志不再被吞
+  - 新增 **READY 事件探针**（包装 `client.ws_dispatch`）：在事件分发层确认连接状态，比 on_ready 更可靠，双重保障
+  - 新增 30 秒连接看门狗：未收到 READY 自动记录错误状态
+- **清理重复的 `_reply_text` 定义**（原来定义两次，后者覆盖前者，存在隐患）
+- 新增 `on_error` 兜底：事件回调异常不再静默吞掉
+
+### 说明
+- QQ 官方机器人需先在 q.qq.com 开放平台申请（AppID/AppSecret），审核通过后才能使用
+- QQ 官方当前不支持回复内直接下发文件，AI 生成的文件会提示到企微端查看
+
+### 依赖
+- 新增 qq-botpy（腾讯官方 QQ 机器人 SDK）：`venv/bin/pip install qq-botpy`
 
 ---
 

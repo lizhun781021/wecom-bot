@@ -46,3 +46,14 @@ IMAGE_SAVE_DIR = os.path.join(_PROJECT_DIR, "图片")
 FILE_SAVE_DIR = os.path.join(_PROJECT_DIR, "文件")
 VOICE_SAVE_DIR = os.path.join(_PROJECT_DIR, "语音")
 VIDEO_SAVE_DIR = os.path.join(_PROJECT_DIR, "视频")
+
+# === QQ 官方机器人配置（v1.4.0）===
+# 先到 q.qq.com 开放平台申请官方机器人（需审核），拿到 AppID/AppSecret 后填入
+# QQ_ENABLED=True 后，独立进程运行：python qq_official_adapter.py
+QQ_ENABLED = False
+QQ_APPID = "your_qq_appid_here"
+QQ_SECRET = "your_qq_appsecret_here"
+# QQ 用户 openid → 名称映射（可选，日志/状态显示用）
+QQ_USER_MAP = {
+    # "user_openid": "昵称",
+}

@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '0a72f488-b2cb-4e2b-91cb-c031dde5e55e'
-  PropagateID: '0a72f488-b2cb-4e2b-91cb-c031dde5e55e'
-  ReservedCode1: '50027a19-9a62-4d2b-b9f0-64963ad0f907'
-  ReservedCode2: '50027a19-9a62-4d2b-b9f0-64963ad0f907'
+  ProduceID: '37ab16e2-0aea-4a29-aaae-1e81175f49be'
+  PropagateID: '37ab16e2-0aea-4a29-aaae-1e81175f49be'
+  ReservedCode1: '69ac0f7b-3b02-415a-8621-7b268d2cfe88'
+  ReservedCode2: '69ac0f7b-3b02-415a-8621-7b268d2cfe88'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -26,8 +26,28 @@ v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送�
 ## 双向能力
 ```
 【接收】企微群聊 @机器人 → WebSocket长连接 → AI处理 → 自动回复
+【接收】QQ群聊 @机器人 / 单聊 → qq-botpy WebSocket → AI处理 → 自动回复（v1.4.0）
 【推送】终端/脚本/Web面板 → Webhook API → 主动发消息到群聊
+【推送】TeleAgent → qq_push_* → 主动回消息到 QQ（v1.4.0 双向桥）
 【后处理】AI配餐回复 → 自动写台账+建待办+生成文档 → 群里发通知
+```
+
+## QQ 官方机器人（v1.4.0）
+```
+独立进程运行（与企微主服务互不干扰）：
+    python qq_official_adapter.py
+
+接入：腾讯官方 qq-botpy SDK（WebSocket 长连接，无需公网 IP）
+监听：群@消息（on_group_at_message_create）+ 单聊消息（on_c2c_message_create）
+处理：复用 server.py 管线 → 同一 8088 代理 → 同一套河南标准化技能
+回复：QQ 官方 API（post_group_message / post_c2c_message）
+
+配置（config.py）：
+    QQ_ENABLED = True
+    QQ_APPID  = "开放平台审核通过后的 AppID"
+    QQ_SECRET = "AppSecret"
+
+先到 q.qq.com 申请官方机器人（需审核），拿到 AppID/Secret 后填入即可启用
 ```
 
 ## 架构
@@ -50,6 +70,7 @@ v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.4.0 | 2026-08-16 | QQ官方机器人接入+TeleAgent双向桥（主动推送）+READY探针修复 |
 | v1.3.0 | 2026-08-16 | 面板图片推送+自动压缩（≤2MB）+Tab三菜单布局 |
 | v1.2.0 | 2026-08-16 | AI配餐后处理：台账表格+跟进待办+企微文档 |
 | v1.1.0 | 2026-08-16 | 新增主动推送群聊消息 + Web管理面板（8505） |
@@ -68,6 +89,7 @@ v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送�
 | `wecom_api.py` | 企微文档/表格/待办 API 封装（通过 wecom-cli 调用） |
 | `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送，图片超2MB自动压缩） |
 | `dashboard.py` | Web管理面板（端口8505，状态监控+主动推送+消息记录+实时日志，Tab菜单） |
+| `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送，v1.4.0 新增） |
 | `config.py` | 配置文件（**已加入.gitignore，不上传GitHub**） |
 | `config_example.py` | 配置模板（脱敏样例，复制为config.py后填入真实凭证） |
 | `peican_sheet_cache.json` | 配餐台账表格 docid/sheet_id 缓存 |
