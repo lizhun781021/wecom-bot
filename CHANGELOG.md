@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'ccfa0c31-f748-4306-b475-714146a0f56c'
-  PropagateID: 'ccfa0c31-f748-4306-b475-714146a0f56c'
-  ReservedCode1: '0b7bff93-ce17-4eb6-88a1-f1fbb8ab6c0d'
-  ReservedCode2: '0b7bff93-ce17-4eb6-88a1-f1fbb8ab6c0d'
+  ProduceID: '511c114a-c857-438c-899c-2425b25be597'
+  PropagateID: '511c114a-c857-438c-899c-2425b25be597'
+  ReservedCode1: '92c31a54-2083-4e0e-8a6c-afdecf648f48'
+  ReservedCode2: '92c31a54-2083-4e0e-8a6c-afdecf648f48'
 ---
 
 # 更新日志
@@ -15,6 +15,24 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.5.2 (2026-08-16)
+
+**面板消息记录接入 QQ 通道 + 修复排序混乱**：QQ 适配器收发的消息现在会出现在面板「消息记录」Tab，带绿色 `QQ` 来源标签；修复历史回填记录缺日期导致的时间排序错乱。
+
+### 新增功能
+- **QQ 消息落盘记录**（qq_official_adapter.py）：新增 `_record_message()`，群@/单聊收到消息时写入 `qq_messages.json`（含 `source: qq`、完整时间戳），供 dashboard 跨进程合并展示
+- **面板合并 QQ 消息记录**（dashboard.py）：`get_message_records()` 读取 `qq_messages.json` 与企微内存记录合并，按时间倒序返回（前端已有 `source` 字段渲染 QQ 标签）
+
+### 修复
+- **修复消息记录时间排序错乱**：历史回填记录只存了 `HH:MM:SS` 丢失日期，导致与当天 QQ 消息比较时字符串排序颠倒（如昨天 23:26 排在今天 15:48 前）；回填时保留完整时间 `full_time`，排序统一按完整时间戳
+- 修复 QQ 图片推送富媒体消息 `Route` 缺少 `"POST"` 方法参数导致私聊图片发送报错（`Route.__init__() missing ... 'path'`）
+
+### 说明
+- `qq_messages.json` 首次收到 QQ 消息时自动创建，与 `qq_status.json` 同目录
+- 面板「消息记录」Tab 现在同时展示企微 + QQ 消息，QQ 记录带 `QQ` 绿色标签
 
 ---
 

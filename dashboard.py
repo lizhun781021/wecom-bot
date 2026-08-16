@@ -74,6 +74,7 @@ def add_message_record(msg_type, user, preview, status="处理中"):
     with MESSAGE_RECORDS_LOCK:
         MESSAGE_RECORDS.insert(0, {
             "time": time.strftime("%H:%M:%S"),
+            "full_time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "type": msg_type,
             "user": user,
             "preview": preview[:80] if preview else "",
@@ -166,9 +167,28 @@ def _read_qq_log_tail(n=30):
 
 
 def get_message_records(n=50):
-    """获取最近N条消息记录"""
+    """获取最近N条消息记录（企微内存记录 + QQ 落盘记录合并，按时间倒序）"""
+    # QQ 消息来自独立进程（qq_official_adapter.py），落盘到 qq_messages.json
+    qq_records = []
+    qq_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'qq_messages.json')
+    try:
+        if os.path.exists(qq_file):
+            with open(qq_file, 'r', encoding='utf-8') as f:
+                qq_records = json.load(f)
+    except Exception:
+        qq_records = []
     with MESSAGE_RECORDS_LOCK:
-        return MESSAGE_RECORDS[:n]
+        merged = qq_records + MESSAGE_RECORDS
+    # 排序：优先用完整时间（YYYY-MM-DD HH:MM:SS），旧数据只有 HH:MM:SS 则补当天日期
+    today = time.strftime("%Y-%m-%d")
+    def _sort_key(r):
+        ft = r.get('full_time')
+        if ft:
+            return ft
+        t = r.get('time', '')
+        return f"{today} {t}" if t else ""
+    merged.sort(key=_sort_key, reverse=True)
+    return merged[:n]
 
 
 # ========== HTML 页面 ==========
@@ -838,8 +858,9 @@ def _backfill_messages_from_log():
             for pat, mtype in patterns:
                 m = re.search(pat, line.strip())
                 if m:
-                    # 提取时间 HH:MM:SS
+                    # 提取时间（完整 + HH:MM:SS）
                     time_match = re.match(r'\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})', line)
+                    full_time = time_match.group(0) if time_match else ""
                     time_str = time_match.group(1) if time_match else "--:--:--"
 
                     userid = m.group(1).rstrip(',')
@@ -856,6 +877,7 @@ def _backfill_messages_from_log():
 
                     records.append({
                         "time": time_str,
+                        "full_time": full_time,
                         "type": mtype,
                         "user": user,
                         "preview": preview,

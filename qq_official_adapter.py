@@ -89,6 +89,9 @@ _QQ_CLIENT = None  # 运行时挂载的 botpy Client（供主动推送）
 
 # 状态落地文件（dashboard 等跨进程读取用）
 QQ_STATUS_FILE = os.path.join(PROJECT_ROOT, "qq_status.json")
+QQ_MESSAGES_FILE = os.path.join(PROJECT_ROOT, "qq_messages.json")
+QQ_MESSAGES = []  # 内存缓存最近100条
+QQ_MESSAGES_LOCK = threading.Lock()
 
 
 def _persist_status():
@@ -116,6 +119,28 @@ def _remember_session(kind: str, openid: str):
         for k in sorted(s, key=s.get)[: len(s) - 100]:
             s.pop(k, None)
     _persist_status()
+
+
+def _record_message(msg_type: str, user: str, preview: str, status: str = "处理中"):
+    """记录一条 QQ 消息（内存+落盘），供 dashboard（独立进程）合并展示"""
+    rec = {
+        "time": time.strftime("%H:%M:%S"),
+        "full_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "source": "qq",
+        "type": msg_type,
+        "user": user[:40] if user else "",
+        "preview": (preview or "")[:80],
+        "status": status,
+    }
+    with QQ_MESSAGES_LOCK:
+        QQ_MESSAGES.insert(0, rec)
+        if len(QQ_MESSAGES) > 100:
+            del QQ_MESSAGES[100:]
+        try:
+            with open(QQ_MESSAGES_FILE, "w", encoding="utf-8") as f:
+                json.dump(QQ_MESSAGES, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"[QQ] 消息落盘失败: {e}")
 
 
 def qq_push_to_group(group_openid: str, content: str):
@@ -224,9 +249,9 @@ def qq_push_image(kind: str, openid: str, image_b64: str, caption: str = ""):
         if caption:
             msg_payload["content"] = caption[:300]
         if kind == "group":
-            msg_route = Route("/v2/groups/{group_openid}/messages", group_openid=openid)
+            msg_route = Route("POST", "/v2/groups/{group_openid}/messages", group_openid=openid)
         else:
-            msg_route = Route("/v2/users/{openid}/messages", openid=openid)
+            msg_route = Route("POST", "/v2/users/{openid}/messages", openid=openid)
         future3 = asyncio.run_coroutine_threadsafe(
             client.api._http.request(msg_route, json=msg_payload), _QQ_LOOP
         )
@@ -415,6 +440,11 @@ class QQOfficialClient(botpy.Client):
             if not content and not file_paths:
                 return
 
+            # 记录到消息列表（供面板消息记录展示）
+            _record_message("text" if content else "image",
+                            from_user,
+                            content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"))
+
             # 异步处理（不阻塞事件循环）
             loop = asyncio.get_event_loop()
             loop.run_in_executor(None, lambda: _handle_qq_message(
@@ -449,6 +479,11 @@ class QQOfficialClient(botpy.Client):
 
             if not content and not file_paths:
                 return
+
+            # 记录到消息列表（供面板消息记录展示）
+            _record_message("text" if content else "image",
+                            from_user,
+                            content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"))
 
             loop = asyncio.get_event_loop()
             loop.run_in_executor(None, lambda: _handle_qq_message(
