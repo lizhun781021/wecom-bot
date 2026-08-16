@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'd9fc81b0-205a-4cac-9408-95393d96fecb'
-  PropagateID: 'd9fc81b0-205a-4cac-9408-95393d96fecb'
-  ReservedCode1: 'd324b9ff-d0cf-4caf-816a-e880efe4d038'
-  ReservedCode2: 'd324b9ff-d0cf-4caf-816a-e880efe4d038'
+  ProduceID: 'bb893743-0181-454c-b670-e6e9986fbd6c'
+  PropagateID: 'bb893743-0181-454c-b670-e6e9986fbd6c'
+  ReservedCode1: '98768f74-0809-446d-81e9-b17aaaa788df'
+  ReservedCode2: '98768f74-0809-446d-81e9-b17aaaa788df'
 ---
 
 # 更新日志
@@ -17,6 +17,22 @@ AIGC:
 - 修订号：Bug修复
 
 ---
+
+## v1.5.9 (2026-08-16)
+
+**QQ 文件推送支持 >5MB 大文件（官方分片上传，上限 200MB）**：此前仅支持 ≤5MB base64 直传；本次实现官方分片上传全流程，实测 8MB（1 片）与 15MB（2 片）私聊推送成功。
+
+### 新增功能
+- **qq_official_adapter.py**：新增 `_qq_chunked_upload()` 分片上传全流程——`upload_prepare`（取 upload_id/block_size/分片预签名 URL）→ 逐片 HTTP PUT → `upload_part_finish` 上报分片 → `files` 合并成最终文件；`qq_push_file()` 自动分流：≤5MB base64 直传（保留 file_name），>5MB 走分片上传，>200MB 拒绝
+- **dashboard.py**：前端文件大小限制从 5MB 放宽到 200MB（>5MB 提示「将走分片上传」）；`_forward_qq_push` 转发超时从 20s 放宽到 600s（大文件上传耗时）
+
+### 实测记录
+- 8MB 文件 `大文件测试.bin`：1 片（8388608B）上传成功
+- 15MB 文件 `多分片测试.bin`：2 片（10485760B + 5242880B）上传成功，日志确认「分片 1/2」「分片 2/2」「分片上传完成」「文件发送成功」
+
+### 备注
+- 官方分片大小由服务端下发（默认 5MB，实测 10MB）；预上传必填 `file_type/file_size/file_name/md5/sha1/md5_10m`（文件前 10002432 字节的 MD5）
+- 群聊通道仍受官方「主动消息推送下线」限制（错误码 40034105），私聊（c2c）不受影响
 
 ## v1.5.8 (2026-08-16)
 

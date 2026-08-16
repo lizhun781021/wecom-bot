@@ -309,12 +309,128 @@ def qq_push_image(kind: str, openid: str, image_b64: str, caption: str = ""):
         return False, str(e)
 
 
+def _qq_chunked_upload(kind: str, openid: str, raw: bytes, filename: str = ""):
+    """QQ 官方分片上传（>5MB 大文件）。
+
+    官方协议（api-v2 / 富媒体分片上传，推荐）：
+      1) POST /v2/users|groups/{openid}/upload_prepare  → upload_id + block_size + parts[]预签名URL
+      2) 按 block_size 逐片 HTTP PUT 到 presigned_url
+      3) 每片 PUT 成功后 POST /v2/users|groups/{openid}/upload_part_finish 通知完成
+      4) 全部分片完成后 POST /v2/users|groups/{openid}/files 携带 upload_id 合并 → file_info
+
+    支持任意格式文件（file_type=4），软/硬限制均为 200MB。
+    返回 (success, file_info_or_detail)
+    """
+    import base64 as _b64
+    import hashlib as _hl
+    import urllib.request as _ur
+
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        return False, "QQ 客户端未运行"
+    from botpy.http import Route
+
+    size = len(raw)
+    fname = filename or "file"
+    md5 = _hl.md5(raw).hexdigest()
+    sha1 = _hl.sha1(raw).hexdigest()
+    md5_10m = _hl.md5(raw[:10002432]).hexdigest()  # 前 ~9.54MB 的 MD5（秒传判断）
+
+    def _request(route, payload=None, timeout=60):
+        fut = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(route, json=payload) if payload is not None
+            else client.api._http.request(route),
+            _QQ_LOOP,
+        )
+        return fut.result(timeout=timeout)
+
+    try:
+        # 1) 预上传
+        prep_payload = {
+            "file_type": 4,
+            "file_size": str(size),
+            "file_name": fname,
+            "md5": md5,
+            "sha1": sha1,
+            "md5_10m": md5_10m,
+        }
+        if kind == "group":
+            prep_route = Route("POST", "/v2/groups/{group_openid}/upload_prepare", group_openid=openid)
+        else:
+            prep_route = Route("POST", "/v2/users/{openid}/upload_prepare", openid=openid)
+        prep = _request(prep_route, prep_payload, timeout=60)
+        if not prep or not prep.get("upload_id"):
+            return False, f"预上传失败: {prep}"
+        upload_id = prep["upload_id"]
+        parts = prep.get("parts") or []
+        if not parts:
+            return False, f"预上传未返回分片列表: {prep}"
+        # 服务端下发分块大小（默认 5MB）；最后一片按剩余字节
+        block_sizes = [int(p.get("block_size") or 0) for p in parts]
+        default_block = block_sizes[0] if block_sizes and block_sizes[0] > 0 else 5 * 1024 * 1024
+        logger.info(f"[QQ] 分片上传开始: {fname} {size}B, {len(parts)}片, upload_id={upload_id}")
+
+        # 2)+3) 逐片 PUT + part_finish
+        offset = 0
+        for idx, part in enumerate(parts):
+            p_index = part.get("index", idx)
+            p_url = part.get("presigned_url", "")
+            p_block = int(part.get("block_size") or default_block)
+            if not p_url:
+                return False, f"分片{idx}缺少预签名URL"
+            chunk = raw[offset:offset + p_block]
+            if not chunk:
+                break
+            # 3.1) PUT 分片到预签名 URL（直连 COS，不走 botpy session）
+            req = _ur.Request(p_url, data=chunk, method="PUT")
+            req.add_header("Content-Type", "application/octet-stream")
+            with _ur.urlopen(req, timeout=120) as resp:
+                if resp.status not in (200, 201, 204):
+                    return False, f"分片{idx} PUT 失败: HTTP {resp.status}"
+            # 3.2) 通知服务端该分片完成
+            fin_payload = {
+                "upload_id": upload_id,
+                "part_index": p_index,
+                "block_size": str(p_block),
+                "md5": _hl.md5(chunk).hexdigest(),
+            }
+            if kind == "group":
+                fin_route = Route("POST", "/v2/groups/{openid}/upload_part_finish", openid=openid)
+            else:
+                fin_route = Route("POST", "/v2/users/{openid}/upload_part_finish", openid=openid)
+            fin = _request(fin_route, fin_payload, timeout=60)
+            if fin is not None and isinstance(fin, dict) and fin.get("err_code"):
+                return False, f"分片{idx} finish 失败: {fin}"
+            offset += len(chunk)
+            logger.info(f"[QQ] 分片 {idx + 1}/{len(parts)} 上传完成 ({len(chunk)}B)")
+
+        # 4) 合并：携带 upload_id 调上传接口 → file_info
+        merge_payload = {
+            "file_type": 4,
+            "srv_send_msg": False,
+            "file_name": fname,
+            "upload_id": upload_id,
+        }
+        if kind == "group":
+            merge_route = Route("POST", "/v2/groups/{group_openid}/files", group_openid=openid)
+        else:
+            merge_route = Route("POST", "/v2/users/{openid}/files", openid=openid)
+        media = _request(merge_route, merge_payload, timeout=120)
+        if not media or not media.get("file_info"):
+            return False, f"分片合并失败: {media}"
+        logger.info(f"[QQ] 分片上传完成: {fname} → file_info 已获取")
+        return True, media
+    except Exception as e:
+        logger.error(f"[QQ] 分片上传失败: {kind}/{openid}, {e}")
+        return False, str(e)
+
+
 def qq_push_file(kind: str, openid: str, file_b64: str, filename: str = "", caption: str = ""):
     """向 QQ 群/单聊发送文件（base64 → 上传 media → 富媒体消息）。
 
-    官方 v2 接口：POST /v2/groups/{group_openid}/files 支持 file_type=4(文件) + file_data(base64)，
-    botpy SDK 注释"暂不开放"已过时（官方 Node SDK 已支持，≤5MB 直传），这里与图片同路走
-    client.api._http.request 原生请求。
+    官方 v2 接口：POST /v2/groups|users/{openid}/files 支持 file_type=4(文件)。
+      - ≤5MB：file_data(base64) 直传（botpy SDK 注释"暂不开放"已过时，实测可用）
+      - >5MB：官方分片上传（upload_prepare → PUT分片 → part_finish → 合并），上限 200MB
     返回 (success, detail)
     """
     if not openid or not file_b64:
@@ -323,41 +439,47 @@ def qq_push_file(kind: str, openid: str, file_b64: str, filename: str = "", capt
     if client is None or _QQ_LOOP is None:
         return False, "QQ 客户端未运行"
 
-    # 去掉可能的 data:xxx;base64, 前缀
+    # 去掉可能的数据前缀
     if "," in file_b64 and file_b64.strip().startswith("data:"):
         file_b64 = file_b64.split(",", 1)[1]
 
-    # 文件大小校验（QQ 官方 ≤5MB 直传；5MB-100MB 需分片，暂不实现）
     import base64 as _b64
     try:
-        raw_len = len(_b64.b64decode(file_b64))
+        raw = _b64.b64decode(file_b64)
     except Exception:
         return False, "文件 base64 解码失败"
-    if raw_len > 5 * 1024 * 1024:
-        return False, "文件超过 5MB，暂不支持直传（5MB-100MB 需分片，后续扩展）"
+    raw_len = len(raw)
+    if raw_len > 200 * 1024 * 1024:
+        return False, "文件超过 200MB，超出 QQ 官方硬限制"
 
     try:
-        # 1) 上传文件拿 file_info
-        payload = {
-            "file_type": 4,  # 4=文件
-            "file_data": file_b64,
-            "srv_send_msg": False,
-        }
-        # 关键：必须带 file_name，否则 QQ 端显示「未命名」（官方字段，botpy 未封装）
-        if filename:
-            payload["file_name"] = filename
         from botpy.http import Route
-        if kind == "group":
-            route = Route("POST", "/v2/groups/{group_openid}/files", group_openid=openid)
+        if raw_len > 5 * 1024 * 1024:
+            # 大文件 → 分片上传
+            ok, media = _qq_chunked_upload(kind, openid, raw, filename)
+            if not ok:
+                return False, media
         else:
-            route = Route("POST", "/v2/users/{openid}/files", openid=openid)
+            # 小文件 → base64 直传
+            payload = {
+                "file_type": 4,  # 4=文件
+                "file_data": file_b64,
+                "srv_send_msg": False,
+            }
+            # 关键：必须带 file_name，否则 QQ 端显示「未命名」（官方字段，botpy 未封装）
+            if filename:
+                payload["file_name"] = filename
+            if kind == "group":
+                route = Route("POST", "/v2/groups/{group_openid}/files", group_openid=openid)
+            else:
+                route = Route("POST", "/v2/users/{openid}/files", openid=openid)
 
-        future = asyncio.run_coroutine_threadsafe(
-            client.api._http.request(route, json=payload), _QQ_LOOP
-        )
-        media = future.result(timeout=30)
-        if not media or not media.get("file_info"):
-            return False, f"文件上传失败: {media}"
+            future = asyncio.run_coroutine_threadsafe(
+                client.api._http.request(route, json=payload), _QQ_LOOP
+            )
+            media = future.result(timeout=30)
+            if not media or not media.get("file_info"):
+                return False, f"文件上传失败: {media}"
 
         # 2) 发富媒体消息（msg_type=7）
         msg_payload = {

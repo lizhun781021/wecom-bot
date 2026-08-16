@@ -539,9 +539,9 @@ async function sendPush() {
       body.imageName = file.name;
     } else if (format === 'file') {
       const file = document.getElementById('push-file').files[0];
-      if (file.size > 5 * 1024 * 1024) {
+      if (file.size > 200 * 1024 * 1024) {
         statusEl.textContent = '失败';
-        resultEl.innerHTML = '<span style="color:#ef4444;">文件超过 5MB，QQ 官方暂不支持直传</span>';
+        resultEl.innerHTML = '<span style="color:#ef4444;">文件超过 200MB，超出 QQ 官方硬限制</span>';
         return;
       }
       body.fileData = await readFileAsBase64(file);
@@ -621,8 +621,8 @@ document.addEventListener('DOMContentLoaded', function() {
     if (this.files && this.files[0]) {
       const f = this.files[0];
       const sizeMB = (f.size / 1024 / 1024).toFixed(2);
-      filePreview.textContent = f.name + ' (' + sizeMB + ' MB)' + (f.size > 5*1024*1024 ? ' - 超过5MB无法直传' : '');
-      filePreview.style.color = f.size > 5*1024*1024 ? '#ef4444' : '#8a9aaa';
+      filePreview.textContent = f.name + ' (' + sizeMB + ' MB)' + (f.size > 5*1024*1024 ? ' - 超过5MB将走分片上传' : '');
+      filePreview.style.color = f.size > 200*1024*1024 ? '#ef4444' : '#8a9aaa';
     } else {
       filePreview.textContent = '';
     }
@@ -858,7 +858,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=20) as resp:
+            # 大文件分片上传耗时较长，放宽超时（默认20s不够，200MB 分片可能数分钟）
+            with urllib.request.urlopen(req, timeout=600) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
                 return bool(data.get('success')), data.get('error', '') or ''
         except Exception as e:

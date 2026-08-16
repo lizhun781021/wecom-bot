@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '24890d9f-dfd5-4c57-8470-76ed5c5ef819'
-  PropagateID: '24890d9f-dfd5-4c57-8470-76ed5c5ef819'
-  ReservedCode1: '3b7d6d81-9bb4-41e8-9cdd-425bbc29ff9d'
-  ReservedCode2: '3b7d6d81-9bb4-41e8-9cdd-425bbc29ff9d'
+  ProduceID: 'cf52b3c7-2857-4a51-9781-a8f19105f453'
+  PropagateID: 'cf52b3c7-2857-4a51-9781-a8f19105f453'
+  ReservedCode1: '550b517f-a10a-48bd-88b4-1678b553cc4a'
+  ReservedCode2: '550b517f-a10a-48bd-88b4-1678b553cc4a'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -105,6 +105,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.5.9 | 2026-08-16 | QQ文件支持>5MB分片上传（官方upload_prepare→PUT→part_finish→files，上限200MB） |
 | v1.5.8 | 2026-08-16 | 修复QQ文件推送文件名丢失（上传带 file_name，不再显示"未命名"） |
 | v1.5.7 | 2026-08-16 | 新增QQ主动发送文件（base64→官方v2文件接口→富媒体消息，≤5MB） |
 | v1.5.6 | 2026-08-16 | 消息记录增加「场景」列（群聊/私聊，企微+QQ 双通道+历史回填） |
