@@ -454,7 +454,13 @@ async function sendPush() {
       resultEl.innerHTML = '<span style="color:#ef4444;">请填写 QQ 群的 group_openid / 用户 openid（或从最近会话选择）</span>';
       return;
     }
-    if (!content.trim()) {
+    if (format === 'image') {
+      const fileInput = document.getElementById('push-image');
+      if (!fileInput.files || fileInput.files.length === 0) {
+        resultEl.innerHTML = '<span style="color:#ef4444;">请先选择图片</span>';
+        return;
+      }
+    } else if (!content.trim()) {
       resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>';
       return;
     }
@@ -512,8 +518,7 @@ document.addEventListener('DOMContentLoaded', function() {
     useridInput.style.display = needsId ? 'inline' : 'none';
     qqSessionSel.style.display = isQq ? 'inline' : 'none';
     if (isQq) {
-      // QQ 官方机器人仅支持纯文本，锁定格式并隐藏图片上传
-      formatSel.value = 'text';
+      // QQ 官方机器人支持文本与图片（图片经 base64 上传），不锁定格式
       onFormatChange();
       loadQQSessions();
     }
@@ -652,9 +657,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not userid.strip():
                     self._serve_json({"success": False, "error": "QQ推送需要填写 group_openid / openid"})
                     return
-                ok, err = self._forward_qq_push(target, userid, content)
+                if fmt == 'image' and not image_data:
+                    self._serve_json({"success": False, "error": "QQ图片推送需要图片数据"})
+                    return
+                ok, err = self._forward_qq_push(target, userid, content, fmt, image_data)
                 if ok:
-                    self._serve_json({"success": True, "detail": f"QQ推送成功 ({target})"})
+                    self._serve_json({"success": True, "detail": f"QQ推送成功 ({target}/{fmt})"})
                 else:
                     self._serve_json({"success": False, "error": f"QQ推送失败: {err}"})
                 return
@@ -728,19 +736,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def _forward_qq_push(self, target, openid, content):
-        """通过 QQ 适配器内部端点转发推送（跨进程）"""
+    def _forward_qq_push(self, target, openid, content, fmt='text', image_data=''):
+        """通过 QQ 适配器内部端点转发推送（跨进程）
+        fmt: text / image；image 时附带 base64 图片数据"""
         import urllib.request
         try:
-            # QQ 官方机器人暂不支持图片直接下发，仅支持文本
-            payload = json.dumps({
+            payload = {
                 "target": "group" if target == 'qq_group' else "user",
                 "openid": openid,
-                "content": content,
-            }).encode('utf-8')
+            }
+            if fmt == 'image':
+                # 图片推送：透传 base64 + 可选 caption
+                payload["image"] = image_data
+                if content.strip():
+                    payload["caption"] = content
+            else:
+                payload["content"] = content
             req = urllib.request.Request(
                 f"http://127.0.0.1:{QQ_PUSH_PORT}/push",
-                data=payload,
+                data=json.dumps(payload).encode('utf-8'),
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )

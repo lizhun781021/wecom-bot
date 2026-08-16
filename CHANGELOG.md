@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '38048970-d15c-42d8-9a39-8d4bd3b6b2a8'
-  PropagateID: '38048970-d15c-42d8-9a39-8d4bd3b6b2a8'
-  ReservedCode1: 'c6495138-9124-4b49-b390-9dc69af3ff2e'
-  ReservedCode2: 'c6495138-9124-4b49-b390-9dc69af3ff2e'
+  ProduceID: 'ccfa0c31-f748-4306-b475-714146a0f56c'
+  PropagateID: 'ccfa0c31-f748-4306-b475-714146a0f56c'
+  ReservedCode1: '0b7bff93-ce17-4eb6-88a1-f1fbb8ab6c0d'
+  ReservedCode2: '0b7bff93-ce17-4eb6-88a1-f1fbb8ab6c0d'
 ---
 
 # 更新日志
@@ -15,6 +15,25 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.5.1 (2026-08-16)
+
+**管理面板支持 QQ 图片推送**：QQ 官方机器人主动推送由「仅文本」升级为「文本+图片」，图片经 base64 直传官方 API，无需公网 URL。
+
+### 新增功能
+- **`qq_push_image(kind, openid, image_b64, caption)`**（qq_official_adapter.py）：base64 → 官方 v2 `/files` 接口上传 media → `/messages` 发富媒体消息（msg_type=7），群/私聊均支持
+  - 自动剥离 `data:image/xxx;base64,` 前缀、校验解码后 ≤5MB
+  - botpy SDK 未封装 base64 上传，直接走 `client.api._http.request(route, json=payload)` 底层接口（不改 site-packages）
+- **内部端点 18506 支持图片**：`/push` 请求体增加 `image`（base64）与 `caption` 字段，有 `image` 走图片推送，否则回退文本
+- **dashboard 前端放开 QQ 图片选项**：QQ 目标不再锁定纯文本，可自由选择「图片」格式并上传文件（原 v1.5.0 强制锁定 text 并隐藏图片上传）
+
+### 修复
+- 修复 QQ 目标下格式被锁死、图片选项不可用的问题（v1.5.0 限制逻辑移除）
+
+### 说明
+- 图片大小上限 5MB（QQ 官方限制），超限会返回明确错误提示
 
 ---
 
