@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '8944d8ff-7a4d-4030-97dd-b68d24980482'
-  PropagateID: '8944d8ff-7a4d-4030-97dd-b68d24980482'
-  ReservedCode1: '050a36fa-f078-4da1-b721-3396252a3006'
-  ReservedCode2: '050a36fa-f078-4da1-b721-3396252a3006'
+  ProduceID: 'd28da516-e3f9-41fc-9c51-6abe0851d975'
+  PropagateID: 'd28da516-e3f9-41fc-9c51-6abe0851d975'
+  ReservedCode1: '73f8d3d6-171c-4da0-8b1d-5cdecb997743'
+  ReservedCode2: '73f8d3d6-171c-4da0-8b1d-5cdecb997743'
 ---
 
 # 更新日志
@@ -18,6 +18,14 @@ AIGC:
 
 ---
 
+## v1.5.4 (2026-08-16)
+
+**消息记录增加日期列**：面板「消息记录」表格新增「日期」列（从 full_time 提取），跨天消息一眼可辨。
+
+### 新增功能
+- 消息记录表头与数据行增加「日期」列（dashboard.py），从 `full_time` 提取 `YYYY-MM-DD`，缺省显示 `-` 
+
+---
 ## v1.5.3 (2026-08-16)
 
 **面板 QQ 消息显示可读昵称**：QQ 发送者 openid 编码可通过 `QQ_USER_MAP` 手动映射为昵称，面板消息记录、会话下拉、会话标题、日志全部显示昵称。

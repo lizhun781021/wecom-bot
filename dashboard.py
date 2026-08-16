@@ -353,7 +353,7 @@ tr:hover { background: #162232; }
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>时间</th><th>来源</th><th>类型</th><th>发送人</th><th>内容预览</th><th>状态</th></tr></thead>
+        <thead><tr><th>日期</th><th>时间</th><th>来源</th><th>类型</th><th>发送人</th><th>内容预览</th><th>状态</th></tr></thead>
         <tbody id="msg-table"></tbody>
       </table>
     </div>
@@ -433,17 +433,22 @@ async function loadMessages() {
     document.getElementById('msg-count').textContent = d.length + ' 条';
     const tbody = document.getElementById('msg-table');
     if (d.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#5a6a7a;padding:30px;">暂无消息记录</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#5a6a7a;padding:30px;">暂无消息记录</td></tr>';
       return;
     }
-    tbody.innerHTML = d.map(m => `<tr>
+    tbody.innerHTML = d.map(m => {
+      const ft = m.full_time || '';
+      const date = ft ? ft.split(' ')[0] : (m.time ? '' : '-');
+      return `<tr>
+      <td>${date || '-'}</td>
       <td>${m.time}</td>
       <td><span class="tag ${m.source === 'qq' ? 'tag-qq' : 'tag-text'}">${m.source === 'qq' ? 'QQ' : '企微'}</span></td>
       <td><span class="tag ${tagClass(m.type)}">${m.type}</span></td>
       <td>${m.user}</td>
       <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${m.preview}</td>
       <td class="${statusClass(m.status)}">${m.status}</td>
-    </tr>`).join('');
+    </tr>`;
+    }).join('');
   } catch(e) { console.error(e); }
 }
 async function loadLogs() {

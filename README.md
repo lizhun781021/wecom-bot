@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'cf05d936-968f-4885-b381-96127f2f85f7'
-  PropagateID: 'cf05d936-968f-4885-b381-96127f2f85f7'
-  ReservedCode1: '4c5bb1b4-81df-4e95-9b5a-4a1ec4907f1c'
-  ReservedCode2: '4c5bb1b4-81df-4e95-9b5a-4a1ec4907f1c'
+  ProduceID: 'c5bee651-5528-4826-becc-a064e1cde444'
+  PropagateID: 'c5bee651-5528-4826-becc-a064e1cde444'
+  ReservedCode1: 'b11aa194-b2b0-4666-afa7-c73747912b62'
+  ReservedCode2: 'b11aa194-b2b0-4666-afa7-c73747912b62'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -105,6 +105,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.5.4 | 2026-08-16 | 消息记录增加日期列（跨天消息一眼可辨） |
 | v1.5.3 | 2026-08-16 | QQ消息显示昵称：QQ_USER_NAME_MAP映射+面板会话/记录昵称化 |
 | v1.5.2 | 2026-08-16 | 面板消息记录合并QQ消息+修复时间排序+修复QQ图片Route参数 |
 | v1.5.1 | 2026-08-16 | 面板QQ图片推送（base64直传官方接口，≤5MB） |
