@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'b886fd7f-30b3-4cf4-900d-0b6a3d54ecd4'
-  PropagateID: 'b886fd7f-30b3-4cf4-900d-0b6a3d54ecd4'
-  ReservedCode1: 'bbaef8c3-40ec-48d2-a766-7a60c1166aeb'
-  ReservedCode2: 'bbaef8c3-40ec-48d2-a766-7a60c1166aeb'
+  ProduceID: '5eaf90a2-ccc9-46b4-b9c8-24720c41e7ca'
+  PropagateID: '5eaf90a2-ccc9-46b4-b9c8-24720c41e7ca'
+  ReservedCode1: '956a4acb-b688-42cd-8f53-84be3b8b9bc9'
+  ReservedCode2: '956a4acb-b688-42cd-8f53-84be3b8b9bc9'
 ---
 
 # 更新日志
@@ -15,6 +15,18 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.5.7 (2026-08-16)
+
+**新增 QQ 主动发送文件能力**：管理面板可向 QQ 群/私聊主动推送文件（base64 → 官方 v2 文件接口 → 富媒体消息），与图片推送同路。
+
+### 新增功能
+- **QQ 适配器**（qq_official_adapter.py）：新增 `qq_push_file()`，`file_type=4`(文件) + `file_data`(base64) 直传官方 `/v2/groups|users/{openid}/files` 接口，然后发 `msg_type=7` 富媒体消息；支持 ≤5MB 直传（5MB-100MB 分片后续扩展）、data: 前缀剥离、文件名透传、caption 附带
+- **内部端点**（18506）：`/push` 支持 `file` 字段路由到 `qq_push_file`，与图片/文本推送并列
+- **面板前端**（dashboard.py）：消息格式下拉新增「文件」选项；新增文件上传区（选择+大小预览，>5MB 标红）；企微目标选择文件时提示仅支持 QQ；后端 `_handle_push` / `_forward_qq_push` 支持 `fileData`/`fileName` 透传
+- 已验证完整链路：面板→18506→qq_push_file→官方API（无效 openid 正确返回错误，请求真实到达 `api.sgroup.qq.com/v2/users/{openid}/files`）
 
 ---
 

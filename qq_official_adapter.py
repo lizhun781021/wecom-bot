@@ -309,6 +309,75 @@ def qq_push_image(kind: str, openid: str, image_b64: str, caption: str = ""):
         return False, str(e)
 
 
+def qq_push_file(kind: str, openid: str, file_b64: str, filename: str = "", caption: str = ""):
+    """向 QQ 群/单聊发送文件（base64 → 上传 media → 富媒体消息）。
+
+    官方 v2 接口：POST /v2/groups/{group_openid}/files 支持 file_type=4(文件) + file_data(base64)，
+    botpy SDK 注释"暂不开放"已过时（官方 Node SDK 已支持，≤5MB 直传），这里与图片同路走
+    client.api._http.request 原生请求。
+    返回 (success, detail)
+    """
+    if not openid or not file_b64:
+        return False, "缺少 openid 或文件数据"
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        return False, "QQ 客户端未运行"
+
+    # 去掉可能的 data:xxx;base64, 前缀
+    if "," in file_b64 and file_b64.strip().startswith("data:"):
+        file_b64 = file_b64.split(",", 1)[1]
+
+    # 文件大小校验（QQ 官方 ≤5MB 直传；5MB-100MB 需分片，暂不实现）
+    import base64 as _b64
+    try:
+        raw_len = len(_b64.b64decode(file_b64))
+    except Exception:
+        return False, "文件 base64 解码失败"
+    if raw_len > 5 * 1024 * 1024:
+        return False, "文件超过 5MB，暂不支持直传（5MB-100MB 需分片，后续扩展）"
+
+    try:
+        # 1) 上传文件拿 file_info
+        payload = {
+            "file_type": 4,  # 4=文件
+            "file_data": file_b64,
+            "srv_send_msg": False,
+        }
+        from botpy.http import Route
+        if kind == "group":
+            route = Route("POST", "/v2/groups/{group_openid}/files", group_openid=openid)
+        else:
+            route = Route("POST", "/v2/users/{openid}/files", openid=openid)
+
+        future = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(route, json=payload), _QQ_LOOP
+        )
+        media = future.result(timeout=30)
+        if not media or not media.get("file_info"):
+            return False, f"文件上传失败: {media}"
+
+        # 2) 发富媒体消息（msg_type=7）
+        msg_payload = {
+            "msg_type": 7,
+            "media": media,
+        }
+        if caption:
+            msg_payload["content"] = caption[:300]
+        if kind == "group":
+            msg_route = Route("POST", "/v2/groups/{group_openid}/messages", group_openid=openid)
+        else:
+            msg_route = Route("POST", "/v2/users/{openid}/messages", openid=openid)
+        future3 = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(msg_route, json=msg_payload), _QQ_LOOP
+        )
+        result = future3.result(timeout=30)
+        logger.info(f"[QQ] 文件发送成功: {kind}/{openid} ({filename or 'unnamed'})")
+        return True, "文件发送成功"
+    except Exception as e:
+        logger.error(f"[QQ] 文件发送失败: {kind}/{openid}, {e}")
+        return False, str(e)
+
+
 def get_qq_status():
     """供 dashboard 或外部查询 QQ 运行状态"""
     return dict(QQ_STATUS)
@@ -563,7 +632,12 @@ def _start_internal_http():
                 openid = body.get("openid", "")
                 image_b64 = body.get("image", "")  # 可选：图片 base64
                 caption = body.get("caption", "")
-                if image_b64:
+                file_b64 = body.get("file", "")  # 可选：文件 base64
+                filename = body.get("filename", "")  # 可选：文件名
+                if file_b64:
+                    # 文件推送
+                    ok, detail = qq_push_file(target, openid, file_b64, filename, caption)
+                elif image_b64:
                     # 图片推送
                     ok, detail = qq_push_image(target, openid, image_b64, caption)
                 elif target == "group":

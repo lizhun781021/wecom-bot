@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '2d03b335-aaed-4dfa-bcd6-dfbe1f0885d7'
-  PropagateID: '2d03b335-aaed-4dfa-bcd6-dfbe1f0885d7'
-  ReservedCode1: '890318a5-cba0-4706-9f25-27eb467b0f7a'
-  ReservedCode2: '890318a5-cba0-4706-9f25-27eb467b0f7a'
+  ProduceID: '6630b6d3-5345-4784-bb52-632c8cb6180a'
+  PropagateID: '6630b6d3-5345-4784-bb52-632c8cb6180a'
+  ReservedCode1: 'fe43e4d2-3b52-41ca-9b31-4cc2614ef4b8'
+  ReservedCode2: 'fe43e4d2-3b52-41ca-9b31-4cc2614ef4b8'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -105,6 +105,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.5.7 | 2026-08-16 | 新增QQ主动发送文件（base64→官方v2文件接口→富媒体消息，≤5MB） |
 | v1.5.6 | 2026-08-16 | 消息记录增加「场景」列（群聊/私聊，企微+QQ 双通道+历史回填） |
 | v1.5.5 | 2026-08-16 | 修复QQ消息记录重启丢失（启动加载历史+落盘防御合并） |
 | v1.5.4 | 2026-08-16 | 消息记录增加日期列（跨天消息一眼可辨） |

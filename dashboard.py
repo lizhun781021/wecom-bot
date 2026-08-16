@@ -334,6 +334,7 @@ tr:hover { background: #162232; }
           <option value="text">纯文本</option>
           <option value="markdown">Markdown</option>
           <option value="image">图片</option>
+          <option value="file">文件</option>
         </select>
       </div>
       <div id="push-content-wrap" style="margin-bottom: 12px;">
@@ -343,6 +344,11 @@ tr:hover { background: #162232; }
         <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">选择图片</label>
         <input id="push-image" type="file" accept="image/*" style="background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;max-width:70%;">
         <div id="push-image-preview" style="margin-top:10px;"></div>
+      </div>
+      <div id="push-file-wrap" style="margin-bottom: 12px; display:none;">
+        <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">选择文件</label>
+        <input id="push-file" type="file" style="background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;max-width:70%;">
+        <div id="push-file-preview" style="margin-top:10px;font-size:12px;color:#8a9aaa;"></div>
       </div>
       <button class="refresh-btn" style="padding:8px 24px;font-size:14px;" onclick="sendPush()">发送</button>
       <div id="push-result" style="margin-top:10px;font-size:13px;"></div>
@@ -499,6 +505,12 @@ async function sendPush() {
         resultEl.innerHTML = '<span style="color:#ef4444;">请先选择图片</span>';
         return;
       }
+    } else if (format === 'file') {
+      const fileInput = document.getElementById('push-file');
+      if (!fileInput.files || fileInput.files.length === 0) {
+        resultEl.innerHTML = '<span style="color:#ef4444;">请先选择文件</span>';
+        return;
+      }
     } else if (!content.trim()) {
       resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>';
       return;
@@ -509,6 +521,9 @@ async function sendPush() {
       resultEl.innerHTML = '<span style="color:#ef4444;">请先选择图片</span>';
       return;
     }
+  } else if (format === 'file') {
+    resultEl.innerHTML = '<span style="color:#ef4444;">文件推送仅支持 QQ 官方机器人</span>';
+    return;
   } else if (!content.trim()) {
     resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>';
     return;
@@ -522,6 +537,15 @@ async function sendPush() {
       const file = document.getElementById('push-image').files[0];
       body.imageData = await readFileAsBase64(file);
       body.imageName = file.name;
+    } else if (format === 'file') {
+      const file = document.getElementById('push-file').files[0];
+      if (file.size > 5 * 1024 * 1024) {
+        statusEl.textContent = '失败';
+        resultEl.innerHTML = '<span style="color:#ef4444;">文件超过 5MB，QQ 官方暂不支持直传</span>';
+        return;
+      }
+      body.fileData = await readFileAsBase64(file);
+      body.fileName = file.name;
     }
     const r = await fetch('/api/push', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
@@ -569,10 +593,16 @@ document.addEventListener('DOMContentLoaded', function() {
   const imageWrap = document.getElementById('push-image-wrap');
   const imageInput = document.getElementById('push-image');
   const imagePreview = document.getElementById('push-image-preview');
+  const fileWrap = document.getElementById('push-file-wrap');
+  const fileInput = document.getElementById('push-file');
+  const filePreview = document.getElementById('push-file-preview');
   function onFormatChange() {
-    const isImage = formatSel.value === 'image';
-    contentWrap.style.display = isImage ? 'none' : '';
+    const f = formatSel.value;
+    const isImage = f === 'image';
+    const isFile = f === 'file';
+    contentWrap.style.display = (isImage || isFile) ? 'none' : '';
     imageWrap.style.display = isImage ? '' : 'none';
+    fileWrap.style.display = isFile ? '' : 'none';
   }
   formatSel.addEventListener('change', onFormatChange);
   onFormatChange();
@@ -585,6 +615,16 @@ document.addEventListener('DOMContentLoaded', function() {
       reader.readAsDataURL(this.files[0]);
     } else {
       imagePreview.innerHTML = '';
+    }
+  });
+  fileInput.addEventListener('change', function() {
+    if (this.files && this.files[0]) {
+      const f = this.files[0];
+      const sizeMB = (f.size / 1024 / 1024).toFixed(2);
+      filePreview.textContent = f.name + ' (' + sizeMB + ' MB)' + (f.size > 5*1024*1024 ? ' - 超过5MB无法直传' : '');
+      filePreview.style.color = f.size > 5*1024*1024 ? '#ef4444' : '#8a9aaa';
+    } else {
+      filePreview.textContent = '';
     }
   });
 });
@@ -680,10 +720,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             userid = req.get('userid', '')
             image_data = req.get('imageData', '')
             image_name = req.get('imageName', 'image.png')
+            file_data = req.get('fileData', '')
+            file_name = req.get('fileName', '')
 
             if fmt == 'image':
                 if not image_data:
                     self._serve_json({"success": False, "error": "图片数据不能为空"})
+                    return
+            elif fmt == 'file':
+                if not file_data:
+                    self._serve_json({"success": False, "error": "文件数据不能为空"})
                     return
             elif not content.strip():
                 self._serve_json({"success": False, "error": "消息内容不能为空"})
@@ -700,11 +746,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if fmt == 'image' and not image_data:
                     self._serve_json({"success": False, "error": "QQ图片推送需要图片数据"})
                     return
-                ok, err = self._forward_qq_push(target, userid, content, fmt, image_data)
+                if fmt == 'file' and not file_data:
+                    self._serve_json({"success": False, "error": "QQ文件推送需要文件数据"})
+                    return
+                ok, err = self._forward_qq_push(target, userid, content, fmt, image_data, file_data, file_name)
                 if ok:
                     self._serve_json({"success": True, "detail": f"QQ推送成功 ({target}/{fmt})"})
                 else:
                     self._serve_json({"success": False, "error": f"QQ推送失败: {err}"})
+                return
+
+            # 企微通道不支持文件推送
+            if fmt == 'file':
+                self._serve_json({"success": False, "error": "文件推送仅支持 QQ 官方机器人"})
                 return
 
             result = None
@@ -776,9 +830,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def _forward_qq_push(self, target, openid, content, fmt='text', image_data=''):
+    def _forward_qq_push(self, target, openid, content, fmt='text', image_data='', file_data='', file_name=''):
         """通过 QQ 适配器内部端点转发推送（跨进程）
-        fmt: text / image；image 时附带 base64 图片数据"""
+        fmt: text / image / file；image 时附带 base64 图片数据，file 时附带 base64 文件数据+文件名"""
         import urllib.request
         try:
             payload = {
@@ -788,6 +842,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if fmt == 'image':
                 # 图片推送：透传 base64 + 可选 caption
                 payload["image"] = image_data
+                if content.strip():
+                    payload["caption"] = content
+            elif fmt == 'file':
+                # 文件推送：透传 base64 + 文件名 + 可选 caption
+                payload["file"] = file_data
+                payload["filename"] = file_name or "文件"
                 if content.strip():
                     payload["caption"] = content
             else:
