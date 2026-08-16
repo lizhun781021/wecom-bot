@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '511c114a-c857-438c-899c-2425b25be597'
-  PropagateID: '511c114a-c857-438c-899c-2425b25be597'
-  ReservedCode1: '92c31a54-2083-4e0e-8a6c-afdecf648f48'
-  ReservedCode2: '92c31a54-2083-4e0e-8a6c-afdecf648f48'
+  ProduceID: '8944d8ff-7a4d-4030-97dd-b68d24980482'
+  PropagateID: '8944d8ff-7a4d-4030-97dd-b68d24980482'
+  ReservedCode1: '050a36fa-f078-4da1-b721-3396252a3006'
+  ReservedCode2: '050a36fa-f078-4da1-b721-3396252a3006'
 ---
 
 # 更新日志
@@ -15,6 +15,25 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.5.3 (2026-08-16)
+
+**面板 QQ 消息显示可读昵称**：QQ 发送者 openid 编码可通过 `QQ_USER_MAP` 手动映射为昵称，面板消息记录、会话下拉、会话标题、日志全部显示昵称。
+
+### 新增功能
+- **`QQ_USER_MAP` 手动映射**（config.py）：`{openid: "昵称"}`，沿用企微 `WECOM_USER_MAP` 的机制，`config_example.py` 同步示例
+- **`_display_name()`**（qq_official_adapter.py）：openid → 昵称统一转换，映射不到保留原值（仍截断防超长）；消息记录、会话标题、日志均使用该函数
+- **面板会话下拉显示昵称**（dashboard.py）：`/api/qqstatus` 附带 `user_map`，QQ 私聊/群聊「最近会话快捷选择」下拉显示「李准 (15:48)」而非 openid 前 12 位
+
+### 修复
+- **单聊不再误触发企微通讯录查询**：已映射的 QQ openid 直接用昵称，避免 openid 被当企微 userid 查姓名产生 60020 报错日志
+- **历史消息兜底映射**：日志回填时同步套用 `QQ_USER_MAP`，旧记录里的 openid 也显示为昵称
+
+### 说明
+- 新增 QQ 用户时，在 `config.py` 的 `QQ_USER_MAP` 加一行 `"openid": "昵称"` 即可
+- QQ 官方消息不含昵称字段，也无查询昵称的开放接口，只能手动映射（与企微通讯录自动查姓名不同）
 
 ---
 

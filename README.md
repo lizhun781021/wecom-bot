@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '90dabf36-064c-46ea-a32b-5acdf8537487'
-  PropagateID: '90dabf36-064c-46ea-a32b-5acdf8537487'
-  ReservedCode1: 'e006791c-d450-4422-9f4a-5655d3b80d78'
-  ReservedCode2: 'e006791c-d450-4422-9f4a-5655d3b80d78'
+  ProduceID: 'cf05d936-968f-4885-b381-96127f2f85f7'
+  PropagateID: 'cf05d936-968f-4885-b381-96127f2f85f7'
+  ReservedCode1: '4c5bb1b4-81df-4e95-9b5a-4a1ec4907f1c'
+  ReservedCode2: '4c5bb1b4-81df-4e95-9b5a-4a1ec4907f1c'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -47,8 +47,11 @@ v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送�
     QQ_ENABLED = True
     QQ_APPID  = "开放平台审核通过后的 AppID"
     QQ_SECRET = "AppSecret"
+    QQ_USER_MAP = { "openid": "昵称" }   # 可选：面板消息/会话显示昵称（v1.5.3）
 
 先到 q.qq.com 申请官方机器人（需审核），拿到 AppID/Secret 后填入即可启用
+QQ 官方消息不含昵称字段、也没有查询昵称的开放接口，
+在 QQ_USER_MAP 里给 openid 配昵称，面板就显示「李准」而不是一长串编码（v1.5.3）
 ```
 
 ## 管理面板（v1.5.2 双通道）
@@ -102,6 +105,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.5.3 | 2026-08-16 | QQ消息显示昵称：QQ_USER_NAME_MAP映射+面板会话/记录昵称化 |
 | v1.5.2 | 2026-08-16 | 面板消息记录合并QQ消息+修复时间排序+修复QQ图片Route参数 |
 | v1.5.1 | 2026-08-16 | 面板QQ图片推送（base64直传官方接口，≤5MB） |
 | v1.5.0 | 2026-08-16 | 管理面板双通道：QQ状态卡片+消息来源列+QQ主动推送+日志合并 |
@@ -124,7 +128,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 | `wecom_api.py` | 企微文档/表格/待办 API 封装（通过 wecom-cli 调用） |
 | `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送，图片超2MB自动压缩） |
 | `dashboard.py` | Web管理面板（端口8505，企微+QQ双通道状态监控+主动推送+消息记录+实时日志，Tab菜单，v1.5.0 支持 QQ） |
-| `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送 + 内部推送端点18506，v1.4.0 新增） |
+| `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送 + 内部推送端点18506，v1.4.0 新增；v1.5.3 增加 openid→昵称显示映射） |
 | `config.py` | 配置文件（**已加入.gitignore，不上传GitHub**） |
 | `config_example.py` | 配置模板（脱敏样例，复制为config.py后填入真实凭证） |
 | `peican_sheet_cache.json` | 配餐台账表格 docid/sheet_id 缓存 |

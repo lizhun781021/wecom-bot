@@ -121,6 +121,16 @@ def _remember_session(kind: str, openid: str):
     _persist_status()
 
 
+def _display_name(openid: str, max_len: int = 40) -> str:
+    """openid → 可读昵称（QQ_USER_MAP 手动映射），映射不到保留原值"""
+    if not openid:
+        return ""
+    name = config.QQ_USER_MAP.get(openid) if hasattr(config, "QQ_USER_MAP") else None
+    if not name:
+        name = openid
+    return str(name)[:max_len]
+
+
 def _record_message(msg_type: str, user: str, preview: str, status: str = "处理中"):
     """记录一条 QQ 消息（内存+落盘），供 dashboard（独立进程）合并展示"""
     rec = {
@@ -128,7 +138,7 @@ def _record_message(msg_type: str, user: str, preview: str, status: str = "处�
         "full_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "source": "qq",
         "type": msg_type,
-        "user": user[:40] if user else "",
+        "user": _display_name(user),
         "preview": (preview or "")[:80],
         "status": status,
     }
@@ -340,17 +350,20 @@ def _extract_text_and_files(result: str):
 def _handle_qq_message(message, from_user, text_content, file_paths, is_group: bool):
     """QQ 消息统一入口：走 server.process_and_reply 的同款逻辑（但回复走 QQ 官方 API）"""
     try:
-        user_name = server.get_user_name(from_user) if not is_group else from_user
-        # 群聊：显示 openid 简写，避免超长
+        # 显示名：优先 QQ_USER_MAP 手动映射，映射不到保留 openid
+        display = _display_name(from_user, max_len=20)
         if is_group:
-            user_name = from_user
+            user_name = display
+        else:
+            # 单聊：已映射直接用昵称（避免触发企微通讯录查询报错）；未映射再走企微姓名管线
+            user_name = display if display != from_user else server.get_user_name(from_user)
 
         # 构建 prompt（复用 server.build_prompt）
         prompt = server.build_prompt(file_paths, text_content, user_name)
         time_str = time.strftime("%H:%M")
         session_title = f"{user_name} | QQ机器人 | {time_str}"
 
-        logger.info(f"[QQ] 调用TeleAgent: 来源={from_user}, 有文件={bool(file_paths)}")
+        logger.info(f"[QQ] 调用TeleAgent: 来源={from_user} (显示={user_name}), 有文件={bool(file_paths)}")
 
         # 调用 AI（阻塞等待，复用 8088 代理）
         result = server.call_teleagent(prompt, timeout=1800, session_title=session_title)

@@ -138,6 +138,12 @@ def get_qq_status():
         result.update(data.get("status", {}))
         result["session"] = data.get("session", {"group": {}, "user": {}})
         result["updated_at"] = data.get("updated_at", "")
+        # 附带 QQ openid → 昵称映射，供前端会话下拉显示可读名
+        try:
+            import config as _cfg
+            result["user_map"] = getattr(_cfg, 'QQ_USER_MAP', {})
+        except Exception:
+            result["user_map"] = {}
         return result
     except Exception:
         return default
@@ -584,7 +590,8 @@ async function loadQQSessions() {
         const t = new Date(ts * 1000);
         const hh = String(t.getHours()).padStart(2, '0');
         const mm = String(t.getMinutes()).padStart(2, '0');
-        return '<option value="' + k + '">' + k.slice(0, 12) + ' (' + hh + ':' + mm + ')</option>';
+        const nick = (d.user_map || {})[k] || k.slice(0, 12);
+        return '<option value="' + k + '">' + nick + ' (' + hh + ':' + mm + ')</option>';
       });
     sel.innerHTML = '<option value="">-- 最近会话快捷选择 --</option>' + opts.join('');
   } catch(e) { console.error(e); }
@@ -827,6 +834,8 @@ def _backfill_messages_from_log():
         try:
             import config as _cfg
             name_map.update(getattr(_cfg, 'WECOM_USER_MAP', {}))
+            # QQ openid 映射（历史消息兜底：日志回填时把 openid 换成昵称）
+            name_map.update(getattr(_cfg, 'QQ_USER_MAP', {}))
         except Exception:
             pass
         cache_file = os.path.join(PROJECT_DIR, 'name_cache.json')

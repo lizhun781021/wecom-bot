@@ -53,7 +53,8 @@ VIDEO_SAVE_DIR = os.path.join(_PROJECT_DIR, "视频")
 QQ_ENABLED = False
 QQ_APPID = "your_qq_appid_here"
 QQ_SECRET = "your_qq_appsecret_here"
-# QQ 用户 openid → 名称映射（可选，日志/状态显示用）
+# QQ 用户 openid → 名称映射（可选，面板消息记录/会话/日志显示用）
 QQ_USER_MAP = {
     # "user_openid": "昵称",
+    # 例：给发过消息的 openid 起个可读名字，面板就会显示"李准"而不是一长串编码
 }
