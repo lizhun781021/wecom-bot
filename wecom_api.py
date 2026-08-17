@@ -62,6 +62,43 @@ def _get_access_token():
         return None
 
 
+_WECOM_CLI_PATH = None
+
+
+def _find_wecom_cli():
+    """探测 wecom-cli 可执行文件路径（launchd 的 PATH 受限，需显式指定）
+
+    查找顺序：
+    1. 环境变量 WECOM_CLI
+    2. PATH 中的 wecom-cli
+    3. TeleAgent node runtime 目录（实测安装位置）
+    """
+    global _WECOM_CLI_PATH
+    if _WECOM_CLI_PATH:
+        return _WECOM_CLI_PATH
+
+    import shutil
+    import os
+    candidates = []
+    env_path = os.environ.get("WECOM_CLI", "")
+    if env_path:
+        candidates.append(env_path)
+    found = shutil.which("wecom-cli")
+    if found:
+        candidates.append(found)
+    candidates.append(os.path.expanduser("~/.local/share/TeleAgent/runtimes/node/bin/wecom-cli"))
+    candidates.append("/opt/homebrew/bin/wecom-cli")
+
+    for c in candidates:
+        if c and os.path.isfile(c) and os.access(c, os.X_OK):
+            _WECOM_CLI_PATH = c
+            logger.info(f"wecom-cli 路径: {c}")
+            return c
+
+    logger.error("未找到 wecom-cli（可设置环境变量 WECOM_CLI 或安装到 PATH）")
+    return "wecom-cli"  # 兜底，走系统 PATH
+
+
 def _wecom_cli(category, method, params):
     """通过 wecom-cli 调用企微 API（统一封装 JSON-RPC 解包）
 
@@ -74,7 +111,7 @@ def _wecom_cli(category, method, params):
         dict: 解包后的 API 返回结果
     """
     try:
-        cmd = ["wecom-cli", category, method, json.dumps(params)]
+        cmd = [_find_wecom_cli(), category, method, json.dumps(params)]
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -183,59 +220,19 @@ def _save_sheet_cache(docid, sheet_id):
 
 
 def _create_peican_sheet():
-    """创建配餐台账在线表格，写入表头，返回 (docid, sheet_id) 或 (None, None)"""
-    # Step 1: 新建空白表格（通过 wecom-cli，有文档权限）
-    result = _wecom_cli("doc", "create_doc", {
-        "doc_type": 4,  # 在线表格
-        "doc_name": f"配餐台账_{time.strftime('%Y%m')}"
-    })
-    if result.get("errcode", -1) != 0:
-        logger.error(f"创建配餐台账表格失败: {result}")
+    """创建配餐台账智能表格（MCP 方式，一步建表带表头），返回 (docid, sheet_id) 或 (None, None)"""
+    result = create_smart_sheet_with_headers(
+        f"配餐台账_{time.strftime('%Y%m')}",
+        PEICAN_SHEET_HEADERS,
+        field_types={h: "text" for h in PEICAN_SHEET_HEADERS}  # 台账全用文本，避免数字列带小数
+    )
+    if not result.get("success"):
+        logger.error(f"创建配餐台账表格失败: {result.get('error')}")
         return None, None
 
     docid = result.get("docid", "")
-    url = result.get("url", "")
-    logger.info(f"配餐台账表格已创建: docid={docid}, url={url}")
-
-    if not docid:
-        return None, None
-
-    # Step 2: 获取表格信息，拿到默认子表的 sheet_id
-    time.sleep(1)  # 等待表格创建完成
-    info = _wecom_cli("doc", "sheet_get_info", {"docid": docid})
-    if info.get("errcode", -1) != 0:
-        logger.error(f"获取表格信息失败: {info}")
-        return docid, None
-
-    sheets = info.get("sheets", [])
-    if not sheets:
-        logger.error("表格没有子表")
-        return docid, None
-
-    sheet_id = sheets[0].get("sheet_id", "")
-    logger.info(f"默认子表: sheet_id={sheet_id}, title={sheets[0].get('title')}")
-
-    # Step 3: 写入表头（第一行）
-    header_row = {
-        "values": [
-            {"cell_value": {"text": h}, "cell_format": {}}
-            for h in PEICAN_SHEET_HEADERS
-        ]
-    }
-    write_result = _wecom_cli("doc", "sheet_update_range_data", {
-        "docid": docid,
-        "sheet_id": sheet_id,
-        "grid_data": {
-            "start_row": 0,
-            "start_column": 0,
-            "rows": [header_row]
-        }
-    })
-    if write_result.get("errcode", -1) != 0:
-        logger.error(f"写入表头失败: {write_result}")
-    else:
-        logger.info(f"配餐台账表头已写入: {PEICAN_SHEET_HEADERS}")
-
+    sheet_id = result.get("sheet_id", "")
+    logger.info(f"配餐台账智能表格已创建: docid={docid}, sheet_id={sheet_id}, url={result.get('url')}")
     return docid, sheet_id
 
 
@@ -262,7 +259,7 @@ def _ensure_sheet():
 
 
 def append_peican_record(record_data):
-    """向配餐台账追加一行数据
+    """向配餐台账追加一行数据（MCP 智能表格方式，不依赖 wecom-cli）
 
     Args:
         record_data: dict，key 对应 PEICAN_SHEET_HEADERS，如：
@@ -286,21 +283,17 @@ def append_peican_record(record_data):
     if not docid or not sheet_id:
         return {"success": False, "url": "", "error": "无法创建或获取配餐台账表格"}
 
-    # 按表头顺序构造行数据
-    values = []
+    # 构造记录：文本字段用 [{"type": "text", "text": ...}] 数组格式
+    record = {}
     for header in PEICAN_SHEET_HEADERS:
-        text = str(record_data.get(header, ""))
-        values.append({"cell_value": {"text": text}, "cell_format": {}})
+        value = record_data.get(header, "")
+        record[header] = [{"type": "text", "text": str(value)}]
 
-    result = _wecom_cli("doc", "sheet_append_data", {
-        "docid": docid,
-        "sheet_id": sheet_id,
-        "row": {"values": values}
-    })
+    result = mcp_smartsheet_add_records(docid, sheet_id, [{"values": record}])
 
-    if result.get("errcode", -1) != 0:
+    if not result.get("success"):
         # 表格可能被删了，尝试重建
-        logger.warning(f"追加数据失败，尝试重建表格: {result}")
+        logger.warning(f"追加数据失败，尝试重建表格: {result.get('error')}")
         global _sheet_docid, _sheet_id
         _sheet_docid = None
         _sheet_id = None
@@ -308,15 +301,15 @@ def append_peican_record(record_data):
         if docid and sheet_id:
             _save_sheet_cache(docid, sheet_id)
             # 重试追加
-            result = _wecom_cli("doc", "sheet_append_data", {
-                "docid": docid,
-                "sheet_id": sheet_id,
-                "row": {"values": values}
-            })
-            if result.get("errcode", -1) != 0:
-                return {"success": False, "url": "", "error": f"追加失败: {result}"}
+            result = mcp_smartsheet_add_records(docid, sheet_id, [{"values": record}])
+            if not result.get("success"):
+                return {"success": False, "url": "", "error": f"追加失败: {result.get('error')}"}
         else:
             return {"success": False, "url": "", "error": "重建表格失败"}
+
+    sheet_url = f"https://doc.weixin.qq.com/smartsheet/{docid}"
+    logger.info(f"配餐记录已追加到台账: {sheet_url}")
+    return {"success": True, "url": sheet_url, "error": ""}
 
     sheet_url = f"https://doc.weixin.qq.com/sheet/{docid}"
     logger.info(f"配餐记录已追加到台账: {sheet_url}")
@@ -362,7 +355,7 @@ def create_todo(content, follower_userid, end_time=None, remind_type_list=None):
     }
 
     try:
-        cmd = ["wecom-cli", "todo", "create_todo", json.dumps(params)]
+        cmd = [_find_wecom_cli(), "todo", "create_todo", json.dumps(params)]
         result = subprocess.run(
             cmd,
             capture_output=True,
@@ -408,7 +401,7 @@ def create_todo(content, follower_userid, end_time=None, remind_type_list=None):
 # ============================================================
 
 def create_wecom_doc(doc_name, markdown_content):
-    """创建企微文档并写入Markdown内容
+    """创建企微文档并写入Markdown内容（MCP 方式，不依赖 wecom-cli）
 
     Args:
         doc_name: 文档标题
@@ -417,63 +410,30 @@ def create_wecom_doc(doc_name, markdown_content):
     Returns:
         dict: {"success": bool, "url": str, "docid": str, "error": str}
     """
-    # Step 1: 新建空白文档（通过 wecom-cli，有文档权限）
-    result = _wecom_cli("doc", "create_doc", {
-        "doc_type": 3,  # 普通文档
-        "doc_name": doc_name
-    })
-    if result.get("errcode", -1) != 0:
-        logger.error(f"创建文档失败: {result}")
-        return {"success": False, "url": "", "docid": "", "error": f"创建文档失败: {result}"}
-
-    docid = result.get("docid", "")
-    url = result.get("url", "")
-    logger.info(f"文档已创建: docid={docid}, url={url}")
-
-    if not docid:
-        return {"success": False, "url": "", "docid": "", "error": "未获得docid"}
-
-    # Step 2: 写入内容（通过 wecom-cli edit_doc_content，支持 Markdown）
-    time.sleep(1)  # 等待文档创建完成
-
-    # edit_doc_content 支持直接写入 Markdown 内容（content_type=1）
-    write_result = _wecom_cli("doc", "edit_doc_content", {
-        "docid": docid,
-        "content": markdown_content,
-        "content_type": 1  # Markdown 格式
-    })
-
-    if write_result.get("errcode", -1) != 0:
-        logger.warning(f"edit_doc_content 写入失败，尝试 batch_update 降级: {write_result}")
-        # 降级：用 batch_update 逐行插入（单次最多30个操作，每25行一批）
-        lines = markdown_content.split('\n')
-        requests_list = []
-        for line in lines:
-            requests_list.append({
-                "insert_text": {
-                    "text": line + "\n",
-                    "location": {"index": 1}
-                }
-            })
-            if len(requests_list) >= 25:
-                _api_post("/wedoc/document/batch_update", {
-                    "docid": docid,
-                    "requests": requests_list
-                })
-                requests_list = []
-        # 写入剩余的行
-        if requests_list:
-            batch_result = _api_post("/wedoc/document/batch_update", {
-                "docid": docid,
-                "requests": requests_list
-            })
-            if batch_result.get("errcode", -1) != 0:
-                logger.error(f"batch_update 降级也失败: {batch_result}")
-                return {"success": False, "url": url, "docid": docid,
-                        "error": f"内容写入失败: edit_doc_content={write_result}, batch_update={batch_result}"}
+    # 直接 doc_create 一步创建文档并写入 Markdown 内容（doc_type=doc + content_type=markdown）
+    result = mcp_create_doc(doc_name, doc_type="doc", content=markdown_content)
+    if not result.get("success"):
+        # 降级：先建空文档，再用 doc_contents_overwrite 覆盖
+        logger.warning(f"doc_create 带内容失败，降级为空文档+覆盖: {result.get('error')}")
+        result = mcp_create_doc(doc_name, doc_type="doc", content="")
+        if not result.get("success"):
+            logger.error(f"创建文档失败: {result.get('error')}")
+            return {"success": False, "url": "", "docid": "", "error": f"创建文档失败: {result.get('error')}"}
+        docid = result["data"].get("docid", "")
+        url = result["data"].get("url", "")
+        if not docid:
+            return {"success": False, "url": "", "docid": "", "error": "未获得docid"}
+        time.sleep(1)
+        write_result = mcp_overwrite_doc_content(docid, markdown_content, content_type="markdown")
+        if not write_result.get("success"):
+            logger.error(f"doc_contents_overwrite 写入失败: {write_result.get('error')}")
+            return {"success": False, "url": url, "docid": docid,
+                    "error": f"内容写入失败: {write_result.get('error')}"}
     else:
-        logger.info(f"文档内容写入成功: {doc_name}")
+        docid = result["data"].get("docid", "")
+        url = result["data"].get("url", "")
 
+    logger.info(f"文档已创建并写入内容: docid={docid}, url={url}")
     return {"success": True, "url": url, "docid": docid, "error": ""}
 
 
@@ -612,7 +572,7 @@ def mcp_smartsheet_add_records(docid, sheet_id, records):
     })
 
 
-def create_smart_sheet_with_headers(doc_name, headers):
+def create_smart_sheet_with_headers(doc_name, headers, field_types=None):
     """一键创建带表头的智能表格（实测最优方案：doc_create 一步建表）
 
     实测结论（2026-08-17）：
@@ -626,6 +586,8 @@ def create_smart_sheet_with_headers(doc_name, headers):
     Args:
         doc_name: 智能表格名称
         headers: 表头列表，如 ["时间", "处理人", "客户号码"]
+        field_types: 可选，表头→字段类型映射 dict，如 {"金额": "number"}；
+            不传则按表头关键词自动判断（金额/数量/出账/费用/价格 → number，其余 text）
 
     Returns:
         dict: {"success": bool, "docid": str, "sheet_id": str, "url": str, "error": str}
@@ -633,8 +595,12 @@ def create_smart_sheet_with_headers(doc_name, headers):
     if not headers:
         return {"success": False, "docid": "", "sheet_id": "", "url": "", "error": "表头不能为空"}
 
+    field_types = field_types or {}
     fields = [
-        {"field_title": h, "field_type": "number" if h in ("金额", "数量", "出账", "费用", "价格") else "text"}
+        {
+            "field_title": h,
+            "field_type": field_types.get(h, "number" if h in ("金额", "数量", "出账", "费用", "价格") else "text")
+        }
         for h in headers
     ]
     result = mcp_create_doc(doc_name, doc_type="smartsheet", fields=fields, sheet_title="台账")

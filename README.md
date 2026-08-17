@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '6c5ad3c4-54c4-43ec-8d3a-311c32b803e8'
-  PropagateID: '6c5ad3c4-54c4-43ec-8d3a-311c32b803e8'
-  ReservedCode1: '8cffd6a0-2b12-4a3c-8217-1e51bf464e75'
-  ReservedCode2: '8cffd6a0-2b12-4a3c-8217-1e51bf464e75'
+  ProduceID: '9e60b931-3fcc-4e06-86cd-b14991976b6d'
+  PropagateID: '9e60b931-3fcc-4e06-86cd-b14991976b6d'
+  ReservedCode1: '00b2b556-2273-4ac6-8d26-7adf2a0c90a1'
+  ReservedCode2: '00b2b556-2273-4ac6-8d26-7adf2a0c90a1'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -99,6 +99,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.7.1 | 2026-08-17 | 修复配餐台账/待办/文档脱离 wecom-cli 依赖：台账与文档改走 MCP，待办新增 wecom-cli 路径自动探测 |
 | v1.7.0 | 2026-08-17 | 企微侧4类事件处理+Markdown回复+5种模板卡片+文档MCP能力（智能表格一键建表写记录），内置测试指令 /md /card /btn /vote /multi /push /fd /table |
 | v1.6.0 | 2026-08-17 | QQ 机器人 6 大新能力：Markdown/视频/语音(TTS)/主动@/关键词指令/事件回调，面板新增视频与语音格式 |
 | v1.5.10 | 2026-08-17 | 面板→QQ群下发打通（被动回复通道）：自动复用最近5分钟内@的msg_id发文本/图片/文件，重启持久化 |

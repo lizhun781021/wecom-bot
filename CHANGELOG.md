@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '8c4cb4ee-7842-4acf-82f8-84216e19745a'
-  PropagateID: '8c4cb4ee-7842-4acf-82f8-84216e19745a'
-  ReservedCode1: 'e37bba91-7c35-4c03-9bae-4afa6bbae817'
-  ReservedCode2: 'e37bba91-7c35-4c03-9bae-4afa6bbae817'
+  ProduceID: '6c49711a-aee0-4829-9bc5-9b40b1680909'
+  PropagateID: '6c49711a-aee0-4829-9bc5-9b40b1680909'
+  ReservedCode1: '057b2655-42ab-45ea-9033-a695a13677a5'
+  ReservedCode2: '057b2655-42ab-45ea-9033-a695a13677a5'
 ---
 
 # 更新日志
@@ -15,6 +15,26 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.7.1 (2026-08-17)
+
+**修复：配餐台账/待办/文档全部脱离 wecom-cli 依赖，统一走 MCP**。
+
+### 背景
+launchd 托管环境下 `wecom-cli` 不在 PATH（实际安装在 TeleAgent node runtime），导致配餐后处理三步全部失败（写台账/建待办/生成文档均报 `No such file or directory: 'wecom-cli'`）。
+
+### 变更内容
+- **配餐台账（append_peican_record）**：改用 MCP 智能表格（`doc_create` 一步建表带表头 + `smartsheet_records_add` 写记录），不再走 wecom-cli `sheet_append_data`；旧缓存为普通表格时自动重建为智能表格（实测重建+追加成功）
+- **企微文档（create_wecom_doc）**：改用 MCP `doc_create`（doc_type=doc + content 直接传 Markdown），不再走 wecom-cli
+- **待办（create_todo）**：保留 wecom-cli（todo 无 MCP 工具），新增 `_find_wecom_cli()` 自动探测绝对路径（环境变量 `WECOM_CLI` → PATH → TeleAgent node runtime → /opt/homebrew/bin），解决 launchd PATH 受限问题
+- `create_smart_sheet_with_headers` 新增 `field_types` 参数（支持指定字段类型，配餐台账全用 text 避免数字列小数问题）
+
+### 实测结果
+- `append_peican_record`：旧缓存普通表格 → 自动重建智能表格 → 追加记录成功
+- `create_wecom_doc`：建文档 + 写入 Markdown 成功
+- `create_todo`：路径探测成功，待办创建成功（todo_id 返回）
 
 ---
 
