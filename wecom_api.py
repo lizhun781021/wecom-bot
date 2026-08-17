@@ -5,22 +5,21 @@
 
 功能：
 1. 配餐结果写入企微在线表格（新建表格 + 表头 + 追加数据行）
-2. AI自动创建待办提醒（通过 wecom-cli todo create_todo）
+2. AI自动创建待办提醒（通过 MCP todo 服务，不依赖 wecom-cli）
 3. AI生成企微文档替代纯文字回复（新建文档 + 写入Markdown内容）
 
-API端点参考：
-- 新建文档/表格: POST /cgi-bin/wedoc/create_doc
-- 编辑文档内容: POST /cgi-bin/wedoc/document/batch_update
-- 表格追加行: POST /cgi-bin/wedoc/spreadsheet/append_data
-- 表格区域写入: POST /cgi-bin/wedoc/spreadsheet/update_range
-- 表格信息: POST /cgi-bin/wedoc/spreadsheet/get_sheet
-- 待办: 通过 wecom-cli todo create_todo
+MCP 服务（streamableHTTP，均在 config.py 配置或自动从 wecom-cli 解密）：
+- 文档能力: WECOM_MCP_URL（/mcp/v2/bot/doc）
+- 待办能力: WECOM_TODO_MCP_URL（/mcp/robot-todo）
+- 兜底：自动解密 ~/.config/wecom/mcp_config.enc 获取最新 URL
 """
 
 import json
 import time
 import logging
 import subprocess
+import base64
+import os
 import requests
 
 import config
@@ -28,6 +27,9 @@ import config
 logger = logging.getLogger(__name__)
 
 WECOM_API_BASE = "https://qyapi.weixin.qq.com/cgi-bin"
+
+# wecom-cli 本地配置目录（保存 mcp_config.enc 加密配置，可解密出最新 MCP URL）
+WECOM_CLI_CONFIG_DIR = os.path.expanduser("~/.config/wecom")
 
 
 def _get_access_token():
@@ -60,6 +62,78 @@ def _get_access_token():
     except Exception as e:
         logger.error(f"获取access_token异常: {e}")
         return None
+
+
+# ============================================================
+# MCP 配置解密（wecom-cli 的 mcp_config.enc → 各业务 MCP URL）
+# ============================================================
+
+_mcp_config_cache = None
+
+
+def _load_mcp_config():
+    """读取并解密 wecom-cli 的 mcp_config.enc，返回 [{url, type, is_authed, biz_type}, ...]
+
+    wecom-cli 会把企微各业务（doc/todo 等）的 MCP 服务配置加密保存在
+    ~/.config/wecom/mcp_config.enc，密钥在 .encryption_key（base64 的 32 字节）。
+    加密方式：AES-256-GCM，前 12 字节 nonce，末 16 字节 tag。
+
+    Returns:
+        list: 配置项列表；失败返回 []（不抛异常）
+    """
+    global _mcp_config_cache
+    if _mcp_config_cache is not None:
+        return _mcp_config_cache
+
+    try:
+        key_path = os.path.join(WECOM_CLI_CONFIG_DIR, ".encryption_key")
+        enc_path = os.path.join(WECOM_CLI_CONFIG_DIR, "mcp_config.enc")
+        if not (os.path.exists(key_path) and os.path.exists(enc_path)):
+            logger.debug("wecom-cli 配置不存在，跳过 MCP 配置解密")
+            _mcp_config_cache = []
+            return []
+
+        key = base64.b64decode(open(key_path, "rb").read().strip())
+        data = open(enc_path, "rb").read()
+        nonce, ct, tag = data[:12], data[12:-16], data[-16:]
+
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        decryptor = Cipher(algorithms.AES(key), modes.GCM(nonce, tag)).decryptor()
+        plain = decryptor.update(ct) + decryptor.finalize()
+        items = json.loads(plain)
+        _mcp_config_cache = items if isinstance(items, list) else []
+        logger.info(f"已解密 wecom-cli MCP 配置: {[i.get('biz_type') for i in _mcp_config_cache]}")
+        return _mcp_config_cache
+    except Exception as e:
+        logger.warning(f"解密 wecom-cli MCP 配置失败（可忽略，将回退到 config 配置）: {e}")
+        _mcp_config_cache = []
+        return []
+
+
+def _get_mcp_url(biz_type):
+    """获取指定业务的 MCP URL（config.py 优先，wecom-cli 配置兜底）
+
+    Args:
+        biz_type: "doc" / "todo"
+
+    Returns:
+        str: MCP streamableHTTP URL；未找到返回 ""
+    """
+    # 1. config.py 显式配置优先
+    if biz_type == "doc":
+        url = getattr(config, "WECOM_MCP_URL", "")
+        if url:
+            return url.rstrip("/")
+    elif biz_type == "todo":
+        url = getattr(config, "WECOM_TODO_MCP_URL", "")
+        if url:
+            return url.rstrip("/")
+
+    # 2. 兜底：解密 wecom-cli 本地配置（已授权业务）
+    for item in _load_mcp_config():
+        if item.get("biz_type") == biz_type and item.get("url"):
+            return item["url"].rstrip("/")
+    return ""
 
 
 _WECOM_CLI_PATH = None
@@ -320,8 +394,13 @@ def append_peican_record(record_data):
 # 功能2：AI自动创建待办提醒
 # ============================================================
 
+# 待办 MCP 工具名（实测与 wecom-cli 底层一致）：
+#   get_todo_list / create_todo / update_todo / get_todo_detail /
+#   delete_todo / change_todo_user_status / search_todo_userid
+
+
 def create_todo(content, follower_userid, end_time=None, remind_type_list=None):
-    """通过 wecom-cli 创建企微待办
+    """创建企微待办（MCP todo 服务，不依赖 wecom-cli）
 
     Args:
         content: 待办内容
@@ -354,46 +433,122 @@ def create_todo(content, follower_userid, end_time=None, remind_type_list=None):
         "remind_type_list": remind_type_list
     }
 
-    try:
-        cmd = [_find_wecom_cli(), "todo", "create_todo", json.dumps(params)]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
+    result = _mcp_call("create_todo", params, timeout=30, service="todo")
+    if not result.get("success"):
+        logger.error(f"待办创建失败: {result.get('error')}")
+        return {"success": False, "todo_id": "", "error": result.get("error")}
 
-        if result.returncode != 0:
-            logger.error(f"wecom-cli 待办创建失败: {result.stderr}")
-            return {"success": False, "todo_id": "", "error": result.stderr.strip()}
+    data = result["data"]
+    todo_id = data.get("todo_id", "")
+    logger.info(f"待办已创建: todo_id={todo_id}, content={content[:50]}")
+    return {"success": True, "todo_id": todo_id, "error": ""}
 
-        output = result.stdout.strip()
-        # wecom-cli 返回 JSON-RPC 格式，需要解包
-        raw = json.loads(output) if output else {}
-        if "result" in raw:
-            # JSON-RPC 包装格式
-            content_list = raw.get("result", {}).get("content", [])
-            if content_list:
-                data = json.loads(content_list[0].get("text", "{}"))
-            else:
-                data = {}
-        else:
-            data = raw
 
-        if data.get("errcode", -1) == 0:
-            todo_id = data.get("todo_id", "")
-            logger.info(f"待办已创建: todo_id={todo_id}, content={content[:50]}")
-            return {"success": True, "todo_id": todo_id, "error": ""}
-        else:
-            logger.error(f"wecom-cli 待办创建返回错误: {data}")
-            return {"success": False, "todo_id": "", "error": str(data)}
+def get_todo_list(follower_userid, todo_status=None, limit=10, cursor=None,
+                  create_begin_time=None, create_end_time=None,
+                  deadline_begin_time=None, deadline_end_time=None,
+                  remind_begin_time=None, remind_end_time=None):
+    """获取待办列表（MCP get_todo_list，仅可查询本机器人创建的待办）
 
-    except subprocess.TimeoutExpired:
-        logger.error("wecom-cli 待办创建超时")
-        return {"success": False, "todo_id": "", "error": "命令执行超时"}
-    except Exception as e:
-        logger.error(f"创建待办异常: {e}")
-        return {"success": False, "todo_id": "", "error": str(e)}
+    Args:
+        follower_userid: 参与人 userid，必填
+        todo_status: 待办状态过滤 0-已完成 1-进行中，None=全部
+        limit: 最大返回数量，默认10，最大20
+        cursor: 分页游标（上一次响应的 next_cursor）
+        时间过滤：格式 "YYYY-MM-DD HH:mm:ss"
+
+    Returns:
+        dict: {"success": bool, "data": {"todo_list": [...], "next_cursor": str}, "error": str}
+    """
+    args = {"follower_id": follower_userid, "limit": limit}
+    if todo_status is not None:
+        args["todo_status"] = todo_status
+    if cursor:
+        args["cursor"] = cursor
+    for name, val in (("create_begin_time", create_begin_time), ("create_end_time", create_end_time),
+                      ("deadline_begin_time", deadline_begin_time), ("deadline_end_time", deadline_end_time),
+                      ("remind_begin_time", remind_begin_time), ("remind_end_time", remind_end_time)):
+        if val:
+            args[name] = val
+    return _mcp_call("get_todo_list", args, timeout=30, service="todo")
+
+
+def get_todo_detail(todo_ids):
+    """批量获取待办详情（MCP get_todo_detail，最多 20 条）
+
+    Args:
+        todo_ids: 待办 ID 列表，如 ["td-xxx", "td-yyy"]；也可传单个 ID 字符串
+
+    Returns:
+        dict: {"success": bool, "data": dict, "error": str}
+    """
+    if isinstance(todo_ids, str):
+        todo_ids = [todo_ids]
+    return _mcp_call("get_todo_detail", {"todo_id_list": todo_ids[:20]}, timeout=30, service="todo")
+
+
+def update_todo(todo_id, content=None, end_time=None, remind_type_list=None):
+    """更新待办（MCP update_todo）
+
+    Args:
+        todo_id: 待办 ID
+        content: 新待办内容（可选）
+        end_time: 新截止时间，格式 "YYYY-MM-DD HH:mm:ss"（可选）
+        remind_type_list: 新提醒方式列表（可选）
+
+    Returns:
+        dict: {"success": bool, "data": dict, "error": str}
+    """
+    args = {"todo_id": todo_id}
+    if content:
+        args["content"] = content
+    if end_time:
+        args["end_time"] = end_time
+    if remind_type_list is not None:
+        args["remind_type_list"] = remind_type_list
+    return _mcp_call("update_todo", args, timeout=30, service="todo")
+
+
+def delete_todo(todo_id):
+    """删除待办（MCP delete_todo）
+
+    Args:
+        todo_id: 待办 ID
+
+    Returns:
+        dict: {"success": bool, "data": dict, "error": str}
+    """
+    return _mcp_call("delete_todo", {"todo_id": todo_id}, timeout=30, service="todo")
+
+
+def change_todo_user_status(todo_id, follower_userid, todo_status):
+    """修改待办参与人状态（MCP change_todo_user_status）
+
+    Args:
+        todo_id: 待办 ID
+        follower_userid: 参与人 userid
+        todo_status: 0-已完成, 1-进行中
+
+    Returns:
+        dict: {"success": bool, "data": dict, "error": str}
+    """
+    return _mcp_call("change_todo_user_status", {
+        "todo_id": todo_id,
+        "follower_userid": follower_userid,
+        "todo_status": todo_status
+    }, timeout=30, service="todo")
+
+
+def search_todo_userid(keyword):
+    """搜索可被添加为待办参与人的用户（MCP search_todo_userid）
+
+    Args:
+        keyword: 搜索关键词（如姓名/拼音）
+
+    Returns:
+        dict: {"success": bool, "data": dict, "error": str}
+    """
+    return _mcp_call("search_todo_userid", {"keyword": keyword}, timeout=30, service="todo")
 
 
 # ============================================================
@@ -455,23 +610,27 @@ def create_wecom_doc(doc_name, markdown_content):
 #     （内部自动处理"默认字段重命名"的坑）
 
 # MCP 服务地址（streamableHTTP URL 或 JSON Config 里提取）
-MCP_BASE_URL = getattr(config, "WECOM_MCP_URL", "").rstrip("/")
+# doc 能力：WECOM_MCP_URL；todo 能力：WECOM_TODO_MCP_URL / 解密 wecom-cli 配置兜底
+MCP_BASE_URL = _get_mcp_url("doc")
+TODO_MCP_BASE_URL = _get_mcp_url("todo")
 
 
-def _mcp_call(tool_name, arguments, timeout=60):
-    """调用企微文档 MCP 工具（streamableHTTP JSON-RPC 格式）
+def _mcp_call(tool_name, arguments, timeout=60, service="doc"):
+    """调用企微 MCP 工具（streamableHTTP JSON-RPC 格式）
 
     Args:
         tool_name: doc_create / doc_contents_overwrite / smartsheet_sheets_list /
                    smartsheet_fields_list / smartsheet_fields_add /
-                   smartsheet_records_add 等（实际暴露的工具名，与官方文档名不同）
+                   smartsheet_records_add / get_todo_list / create_todo 等
         arguments: dict，工具入参（与 MCP schema 一致）
+        base: "doc" / "todo"，指定走哪个 MCP 服务（默认 doc）
 
     Returns:
         dict: {"success": bool, "data": dict, "error": str}
     """
-    if not MCP_BASE_URL:
-        return {"success": False, "data": {}, "error": "未配置 WECOM_MCP_URL（请先在企微后台授权文档能力并填入 streamableHTTP URL）"}
+    base_url = MCP_BASE_URL if service == "doc" else TODO_MCP_BASE_URL
+    if not base_url:
+        return {"success": False, "data": {}, "error": f"未配置 {service} 业务 MCP URL（请在企微后台授权后填入 config.py）"}
 
     payload = {
         "jsonrpc": "2.0",
@@ -493,7 +652,7 @@ def _mcp_call(tool_name, arguments, timeout=60):
         headers["Authorization"] = f"Bearer {mcp_token}"
 
     try:
-        resp = requests.post(MCP_BASE_URL, json=payload, headers=headers, timeout=timeout)
+        resp = requests.post(base_url, json=payload, headers=headers, timeout=timeout)
         result = resp.json()
         # MCP 返回格式：{"jsonrpc":"2.0","id":...,"result":{"content":[{"type":"text","text":"..."}]}}
         content_list = result.get("result", {}).get("content", [])
@@ -503,7 +662,7 @@ def _mcp_call(tool_name, arguments, timeout=60):
                 data = json.loads(text)
             except Exception:
                 data = {"raw": text}
-            if data.get("errcode", 0) == 0 or "docid" in data or "url" in data:
+            if data.get("errcode", 0) == 0 or "docid" in data or "url" in data or "todo_id" in data:
                 return {"success": True, "data": data, "error": ""}
             return {"success": False, "data": data, "error": data.get("errmsg", text)}
         # 没有 content 说明是错误响应
@@ -668,6 +827,7 @@ if __name__ == '__main__':
         print("用法:")
         print("  测试表格: python wecom_api.py sheet")
         print("  测试待办: python wecom_api.py todo")
+        print("  测试待办列表: python wecom_api.py todolist")
         print("  测试文档: python wecom_api.py doc")
         print("  测试智能表格: python wecom_api.py smartsheet")
         sys.exit(1)
@@ -700,6 +860,19 @@ if __name__ == '__main__':
             end_time=time.strftime("%Y-%m-%d 18:00:00"),
             remind_type_list=[1]
         )
+        print(f"结果: {result}")
+        if result.get("success"):
+            todo_id = result["todo_id"]
+            print("\n=== 测试查询待办列表 ===")
+            lst = get_todo_list("sscblizhun", limit=5)
+            print(f"结果: {lst}")
+            print("\n=== 测试查询待办详情 ===")
+            detail = get_todo_detail(todo_id)
+            print(f"结果: {detail}")
+
+    elif cmd == "todolist":
+        print("=== 测试待办列表 ===")
+        result = get_todo_list("sscblizhun", limit=5)
         print(f"结果: {result}")
 
     elif cmd == "doc":

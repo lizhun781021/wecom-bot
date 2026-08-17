@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '9e60b931-3fcc-4e06-86cd-b14991976b6d'
-  PropagateID: '9e60b931-3fcc-4e06-86cd-b14991976b6d'
-  ReservedCode1: '00b2b556-2273-4ac6-8d26-7adf2a0c90a1'
-  ReservedCode2: '00b2b556-2273-4ac6-8d26-7adf2a0c90a1'
+  ProduceID: '97a1f530-5d73-4234-aec5-994348e76cbb'
+  PropagateID: '97a1f530-5d73-4234-aec5-994348e76cbb'
+  ReservedCode1: '9dd487d8-3eba-43c0-9587-0c0dc433f210'
+  ReservedCode2: '9dd487d8-3eba-43c0-9587-0c0dc433f210'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -99,6 +99,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.8.0 | 2026-08-17 | 待办能力完全脱离 wecom-cli，新增 mcp_config 解密自动获取 todo MCP URL，7 个待办函数全部走 HTTP MCP |
 | v1.7.1 | 2026-08-17 | 修复配餐台账/待办/文档脱离 wecom-cli 依赖：台账与文档改走 MCP，待办新增 wecom-cli 路径自动探测 |
 | v1.7.0 | 2026-08-17 | 企微侧4类事件处理+Markdown回复+5种模板卡片+文档MCP能力（智能表格一键建表写记录），内置测试指令 /md /card /btn /vote /multi /push /fd /table |
 | v1.6.0 | 2026-08-17 | QQ 机器人 6 大新能力：Markdown/视频/语音(TTS)/主动@/关键词指令/事件回调，面板新增视频与语音格式 |
@@ -129,7 +130,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 | `VERSION` | 当前版本号 |
 | `CHANGELOG.md` | 更新日志 |
 | `server.py` | 机器人主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传、配餐后处理） |
-| `wecom_api.py` | 企微文档/表格/待办 API 封装（v1.7.0 新增文档 MCP 能力：`doc_create` 一键建智能表格带表头、`smartsheet_records_add` 写记录） |
+| `wecom_api.py` | 企微文档/表格/待办 API 封装（v1.8.0: 待办 7 个函数全部走 HTTP MCP；新增 mcp_config 加密配置自动解密；v1.7.0 新增文档 MCP 能力） |
 | `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送，图片超2MB自动压缩） |
 | `dashboard.py` | Web管理面板（端口8505，企微+QQ双通道状态监控+主动推送+消息记录+实时日志，Tab菜单，v1.5.0 支持 QQ） |
 | `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送 + 内部推送端点18506，v1.4.0 新增；v1.5.3 增加 openid→昵称显示映射；v1.6.0 增加 Markdown/视频/语音/TTS/@/指令/事件回调） |
@@ -233,4 +234,4 @@ python push.py user <userid> "消息内容"
    - 复杂方案（>800字或多级标题）自动生成企微文档
 3. 群里收到通知消息（含台账链接、待办提示、文档链接）
 
-> **前提**：需安装 wecom-cli 并完成扫码配置，确保有文档（doc）和待办（todo）权限
+> **前提**：需在企微后台授权「文档」和「待办」权限，配置 MCP URL（或安装 wecom-cli 让系统自动解密获取）

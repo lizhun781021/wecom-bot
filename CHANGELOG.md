@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '6c49711a-aee0-4829-9bc5-9b40b1680909'
-  PropagateID: '6c49711a-aee0-4829-9bc5-9b40b1680909'
-  ReservedCode1: '057b2655-42ab-45ea-9033-a695a13677a5'
-  ReservedCode2: '057b2655-42ab-45ea-9033-a695a13677a5'
+  ProduceID: '96ef3dc1-7ff1-47df-a010-9a0e139acaf4'
+  PropagateID: '96ef3dc1-7ff1-47df-a010-9a0e139acaf4'
+  ReservedCode1: '89919050-7d24-4d98-89ba-90abecaf3702'
+  ReservedCode2: '89919050-7d24-4d98-89ba-90abecaf3702'
 ---
 
 # 更新日志
@@ -15,6 +15,40 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.8.0 (2026-08-17)
+
+**重大改进：待办能力完全脱离 wecom-cli，统一走 MCP 服务**。
+
+### 背景
+v1.7.1 已让配餐台账和文档脱离 wecom-cli，但待办功能仍通过 wecom-cli 二进制调用。wecom-cli 的 MCP 配置加密保存在 `~/.config/wecom/mcp_config.enc`（AES-256-GCM），通过解密发现待办有独立的 MCP 服务地址（`/mcp/robot-todo`），使彻底脱离 wecom-cli 成为可能。
+
+### 变更内容
+- **新增 `_load_mcp_config()`**：自动解密 wecom-cli 的 `mcp_config.enc`（AES-256-GCM，密钥 `.encryption_key`），获取 doc/todo 两类业务的 MCP 服务 URL，作为 config.py 配置的兜底
+- **新增 `_get_mcp_url(biz_type)`**：按业务类型获取 MCP URL（config 优先，解密配置兜底）
+- **泛化 `_mcp_call()`**：新增 `service` 参数（"doc"/"todo"），支持调用不同 MCP 服务
+- **重写 `create_todo()`**：改用 MCP `create_todo` 工具（HTTP 调用），彻底移除 `subprocess.run` + wecom-cli 调用
+- **新增 6 个待办函数**：`get_todo_list`、`get_todo_detail`、`update_todo`、`delete_todo`、`change_todo_user_status`、`search_todo_userid`，全部走 HTTP MCP
+- **更新 `config.py`**：新增 `WECOM_TODO_MCP_URL` 配置项（留空则自动解密 wecom-cli 配置）
+
+### 待办 MCP 工具列表（7 个）
+| 工具名 | 功能 | 参数 |
+|--------|------|------|
+| `create_todo` | 创建待办 | content, follower_list, end_time, remind_type_list |
+| `get_todo_list` | 查询待办列表 | follower_id, todo_status, limit, cursor |
+| `get_todo_detail` | 批量查询详情 | todo_id_list (最多20) |
+| `update_todo` | 更新待办 | todo_id, content/end_time/remind_type_list |
+| `delete_todo` | 删除待办 | todo_id |
+| `change_todo_user_status` | 改参与人状态 | todo_id, follower_userid, todo_status |
+| `search_todo_userid` | 搜索用户 | keyword |
+
+### 测试结果
+- create_todo ✅ 创建成功（返回 todo_id）
+- get_todo_list ✅ 列表查询成功（含 next_cursor 分页）
+- get_todo_detail ✅ 详情查询成功（含完整 follower/end_time/remind 等）
+- 原有 server.py 调用 `create_todo(content, follower_userid)` 接口不变，完全兼容
 
 ---
 
