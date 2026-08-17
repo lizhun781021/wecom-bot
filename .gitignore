@@ -28,3 +28,6 @@ temp_uploads/
 config.py
 wecom-bot-stderr.log
 wecom-bot-stdout.log
+
+# 本地测试文件
+测试群发文件.txt

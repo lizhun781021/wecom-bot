@@ -328,6 +328,9 @@ tr:hover { background: #162232; }
           <option value="">-- 最近会话快捷选择 --</option>
         </select>
       </div>
+      <div id="push-qq-tip" style="margin-bottom: 12px; display:none; font-size:12px; color:#f59e0b;">
+        QQ 群聊已不支持主动推送，需群内最近 5 分钟内有 @ 机器人才能下发（文本/图片/文件均可）。若提示无有效 @，请先在群内 @ 一下机器人再重试。
+      </div>
       <div style="margin-bottom: 12px;">
         <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">消息格式</label>
         <select id="push-format" style="background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;">
@@ -580,6 +583,8 @@ document.addEventListener('DOMContentLoaded', function() {
     const needsId = v === 'user' || isQq;
     useridInput.style.display = needsId ? 'inline' : 'none';
     qqSessionSel.style.display = isQq ? 'inline' : 'none';
+    const qqTip = document.getElementById('push-qq-tip');
+    if (qqTip) qqTip.style.display = v === 'qq_group' ? '' : 'none';
     if (isQq) {
       // QQ 官方机器人支持文本与图片（图片经 base64 上传），不锁定格式
       onFormatChange();

@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'bb893743-0181-454c-b670-e6e9986fbd6c'
-  PropagateID: 'bb893743-0181-454c-b670-e6e9986fbd6c'
-  ReservedCode1: '98768f74-0809-446d-81e9-b17aaaa788df'
-  ReservedCode2: '98768f74-0809-446d-81e9-b17aaaa788df'
+  ProduceID: 'd5251e05-cd59-4018-acd0-02fee5bb0121'
+  PropagateID: 'd5251e05-cd59-4018-acd0-02fee5bb0121'
+  ReservedCode1: '26542a31-8e8a-4148-ba20-2bf63008c03e'
+  ReservedCode2: '26542a31-8e8a-4148-ba20-2bf63008c03e'
 ---
 
 # 更新日志
@@ -15,6 +15,27 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.5.10 (2026-08-17)
+
+**面板→QQ群聊下发打通（被动回复通道）**：腾讯已下线 QQ 机器人群聊主动消息推送（40034105），本次实现面板向 QQ 群下发文本/图片/文件均走**被动回复通道**——自动复用群内最近一次 @ 机器人的 msg_id，无需手动复制 msg_id。
+
+### 新增功能
+- **qq_official_adapter.py**：
+  - 新增 `QQ_LAST_GROUP_MSG` 记录每个群最近一次 @ 机器人的 msg_id + 时间戳（`_remember_group_msg`），并随 `qq_status.json` 持久化（重启不丢失，5 分钟内有效）
+  - `/push` 端点群聊分支（target=group）改为：查最近有效 @ → 构造被动回复（带 msg_id + 递增 msg_seq）→ 文件走 `_reply_file_passive`（base64 → 临时落盘 → 上传 → 富媒体消息）、图片走新增 `qq_push_image_passive()`、文本走 `_reply_text()`；无有效 @ 时返回明确提示「该群最近5分钟内没有 @ 机器人，请先在群内 @ 机器人一下」
+  - `_reply_text()` 重构：不再依赖 `message.reply()`（伪造消息对象无 `_api` 属性会崩），改直接构造 Route 调 `client.api._http.request`，群聊带 `msg_id`+`msg_seq`、单聊带 `msg_id`
+- **dashboard.py**：前端选择「QQ群」时显示黄色提示条「QQ 群聊已不支持主动推送，需群内最近 5 分钟内有 @ 机器人才能下发」
+
+### 实测记录
+- 面板链路 → `127.0.0.1:18506/push`（target=group, file）→ 被动回复文件成功：`测试群发文件.txt` 已发到测试群（日志确认 `[QQ] 被动回复文件成功`）
+- 无有效 @ 时正确返回「该群最近5分钟内没有 @ 机器人，请先在群内 @ 机器人一下，再重新发送」
+
+### 备注
+- 被动回复有效期 5 分钟（官方限制），超过需群内重新 @ 机器人
+- 群聊文本被动回复也走 `msg_id` 通道（`msg_type=0` + `msg_seq` 递增），不再调用已被官方下线的主动推送接口
 
 ---
 

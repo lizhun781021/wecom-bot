@@ -86,6 +86,13 @@ QQ_STATUS = {
 # 最近活跃会话（用于主动推送/双向桥）：{"group": {openid: ts}, "user": {openid: ts}}
 QQ_SESSION = {"group": {}, "user": {}}
 _QQ_CLIENT = None  # 运行时挂载的 botpy Client（供主动推送）
+_MSG_SEQ_MAP = {}  # 群聊被动回复 msg_seq 递增计数器 {message_id: seq}
+
+# 每个群最近一次 @ 机器人的消息 {group_openid: {"msg_id": str, "time": float}}
+# 用于面板群聊下发：复用最近 @ 消息的 msg_id 走被动回复通道（官方已下线群主动推送）
+QQ_LAST_GROUP_MSG = {}
+QQ_LAST_GROUP_MSG_LOCK = threading.Lock()
+QQ_PASSIVE_TTL = 5 * 60  # 被动回复有效期（官方 5 分钟）
 
 # 状态落地文件（dashboard 等跨进程读取用）
 QQ_STATUS_FILE = os.path.join(PROJECT_ROOT, "qq_status.json")
@@ -120,12 +127,37 @@ def _persist_status():
                 "group": {k: v for k, v in QQ_SESSION.get("group", {}).items()},
                 "user": {k: v for k, v in QQ_SESSION.get("user", {}).items()},
             },
+            "last_group_msg": {k: dict(v) for k, v in QQ_LAST_GROUP_MSG.items()},
+            "msg_seq_map": dict(_MSG_SEQ_MAP),
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         with open(QQ_STATUS_FILE, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
     except Exception as e:
         logger.error(f"[QQ] 状态落盘失败: {e}")
+
+
+def _load_last_group_msg():
+    """启动时从 qq_status.json 恢复「群最近 @ 消息」记录（避免重启丢失被动回复通道）"""
+    global _MSG_SEQ_MAP
+    try:
+        if os.path.exists(QQ_STATUS_FILE):
+            with open(QQ_STATUS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            recs = data.get("last_group_msg") or {}
+            now = time.time()
+            for gid, rec in recs.items():
+                if isinstance(rec, dict) and rec.get("msg_id") and now - rec.get("time", 0) <= QQ_PASSIVE_TTL:
+                    QQ_LAST_GROUP_MSG[gid] = {"msg_id": rec["msg_id"], "time": rec["time"]}
+            # 恢复 msg_seq 计数器（防止同 msg_id 重启后 seq 重置被 QQ 判定「消息去重」）
+            seq_map = data.get("msg_seq_map") or {}
+            if isinstance(seq_map, dict):
+                _MSG_SEQ_MAP = {k: int(v) for k, v in seq_map.items() if isinstance(v, (int, float, str))}
+    except Exception as e:
+        logger.warning(f"[QQ] 加载群最近 @ 消息失败（忽略）: {e}")
+
+
+_load_last_group_msg()
 
 
 def _remember_session(kind: str, openid: str):
@@ -136,6 +168,33 @@ def _remember_session(kind: str, openid: str):
         for k in sorted(s, key=s.get)[: len(s) - 100]:
             s.pop(k, None)
     _persist_status()
+
+
+def _remember_group_msg(group_openid: str, msg_id: str):
+    """记录某个群最近一次 @ 机器人的 msg_id（被动回复复用用），并同步落盘"""
+    if not group_openid or not msg_id:
+        return
+    with QQ_LAST_GROUP_MSG_LOCK:
+        QQ_LAST_GROUP_MSG[group_openid] = {"msg_id": msg_id, "time": time.time()}
+        # 清理过期条目（防止内存膨胀）
+        now = time.time()
+        expired = [k for k, v in QQ_LAST_GROUP_MSG.items() if now - v.get("time", 0) > QQ_PASSIVE_TTL * 2]
+        for k in expired:
+            QQ_LAST_GROUP_MSG.pop(k, None)
+    _persist_status()
+
+
+def _get_last_group_msg(group_openid: str):
+    """取某群最近一次 @ 消息；5 分钟外视为过期不可复用，返回 None"""
+    if not group_openid:
+        return None
+    with QQ_LAST_GROUP_MSG_LOCK:
+        rec = QQ_LAST_GROUP_MSG.get(group_openid)
+        if not rec:
+            return None
+        if time.time() - rec.get("time", 0) > QQ_PASSIVE_TTL:
+            return None
+        return rec
 
 
 def _display_name(openid: str, max_len: int = 40) -> str:
@@ -543,21 +602,68 @@ def _download_attachment(url: str, save_dir: str, prefix: str) -> str | None:
         return None
 
 
+def _next_msg_seq(message) -> int:
+    """被动回复 msg_seq 递增（群聊专用）。
+
+    QQ 官方规则：同一 msg_id + msg_seq 不可重复；msg_seq 随每条回复递增。
+    单聊默认 msg_seq=1 固定不变；群聊每次回复需递增 msg_seq，否则报重复。
+    """
+    if isinstance(message, GroupMessage):
+        # 按消息 id 隔离计数（不同 @ 消息互不干扰）
+        global _MSG_SEQ_MAP
+        mid = getattr(message, "id", None) or "_default"
+        n = _MSG_SEQ_MAP.get(mid, 0) + 1
+        _MSG_SEQ_MAP[mid] = n
+        # 清理老旧条目（防内存泄漏）
+        if len(_MSG_SEQ_MAP) > 200:
+            _MSG_SEQ_MAP = {k: v for k, v in _MSG_SEQ_MAP.items() if k == mid}
+        # 同步落盘（重启后继续递增，避免同 msg_id 重复 msg_seq 被官方去重）
+        _persist_status()
+        return n
+    return 1
+
+
 def _reply_text(message, content: str, max_len: int = 3000):
-    """统一回复文本（群聊 / 单聊），超长自动截断"""
+    """统一回复文本（群聊 / 单聊），超长自动截断。
+
+    群聊为被动回复（带 msg_id），需带递增 msg_seq。
+    被动回复有效期 5 分钟，超时降级提示。（msg_id 有时间戳，但 SDK 未暴露，这里统一兜底）
+    直接走 client.api._http.request（不依赖 message.reply()，兼容伪造消息对象）
+    """
     if not content:
         return
     if len(content) > max_len:
         content = content[:max_len] + "\n\n(回复过长已截断)"
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        logger.warning("[QQ] 回复文本失败：QQ 客户端未运行")
+        return None
     try:
+        from botpy.http import Route
         if isinstance(message, GroupMessage):
-            return asyncio.run_coroutine_threadsafe(
-                message.reply(content=content), _QQ_LOOP
+            seq = _next_msg_seq(message)
+            route = Route(
+                "POST", "/v2/groups/{group_openid}/messages",
+                group_openid=getattr(message, "group_openid", None),
             )
+            payload = {
+                "msg_type": 0,
+                "content": content,
+                "msg_id": getattr(message, "id", None),
+                "msg_seq": seq,
+            }
         elif isinstance(message, C2CMessage):
-            return asyncio.run_coroutine_threadsafe(
-                message.reply(content=content), _QQ_LOOP
+            route = Route(
+                "POST", "/v2/users/{openid}/messages",
+                openid=getattr(getattr(message, "author", None), "user_openid", None),
             )
+            payload = {"msg_type": 0, "content": content, "msg_id": getattr(message, "id", None)}
+        else:
+            return None
+        fut = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(route, json=payload), _QQ_LOOP
+        )
+        return fut
     except Exception as e:
         logger.error(f"QQ回复失败: {e}")
         return None
@@ -629,12 +735,176 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
         _reply_text_and_files(message, f"处理出错: {e}", [])
 
 
+def _reply_file_passive(message, file_path: str) -> bool:
+    """群聊/私聊被动回复发文件（走 msg_id 被动通道，不受主动消息限制）。
+
+    流程：读取本地文件 → base64 编码 → post files 上传拿 file_info →
+          post messages(msg_type=7, media=file_info, msg_id=原消息id, msg_seq=递增)
+    群聊被动回复有效期 5 分钟，超时则失败。
+    返回 True/False
+    """
+    if not file_path or not os.path.isfile(file_path):
+        logger.warning(f"[QQ] 被动回复发文件：文件不存在 {file_path}")
+        return False
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        return False
+
+    import base64 as _b64
+    from botpy.http import Route
+
+    try:
+        with open(file_path, "rb") as f:
+            raw = f.read()
+        file_b64 = _b64.b64encode(raw).decode()
+        fname = os.path.basename(file_path)
+        size = len(raw)
+
+        is_group = isinstance(message, GroupMessage)
+        openid = getattr(message, "group_openid", None) or getattr(getattr(message, "author", None), "user_openid", None)
+        if not openid:
+            return False
+
+        # 1) 上传文件拿 file_info（≤5MB 直传 / >5MB 分片）
+        if size > 5 * 1024 * 1024:
+            ok, media = _qq_chunked_upload("group" if is_group else "user", openid, raw, fname)
+            if not ok:
+                logger.error(f"[QQ] 被动回复上传文件失败: {media}")
+                return False
+        else:
+            upload_payload = {
+                "file_type": 4,
+                "file_data": file_b64,
+                "srv_send_msg": False,
+                "file_name": fname,
+            }
+            if is_group:
+                up_route = Route("POST", "/v2/groups/{group_openid}/files", group_openid=openid)
+            else:
+                up_route = Route("POST", "/v2/users/{openid}/files", openid=openid)
+            fut = asyncio.run_coroutine_threadsafe(
+                client.api._http.request(up_route, json=upload_payload), _QQ_LOOP
+            )
+            media = fut.result(timeout=30)
+            if not media or not media.get("file_info"):
+                logger.error(f"[QQ] 被动回复上传文件失败: {media}")
+                return False
+
+        # 2) 被动回复发富媒体消息（带 msg_id，不受主动消息限制）
+        seq = _next_msg_seq(message)
+        # 直接走 client.api（不依赖 message.reply()，兼容伪造消息对象测试）
+        msg_route = Route(
+            "POST",
+            "/v2/groups/{group_openid}/messages" if is_group else "/v2/users/{openid}/messages",
+            **({"group_openid": openid} if is_group else {"openid": openid}),
+        )
+        msg_payload = {"msg_type": 7, "media": media, "msg_id": getattr(message, "id", None), "msg_seq": seq}
+        fut2 = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(msg_route, json=msg_payload), _QQ_LOOP
+        )
+        fut2.result(timeout=30)
+        logger.info(f"[QQ] 被动回复文件成功: {fname} ({'群聊' if is_group else '私聊'})")
+        return True
+    except Exception as e:
+        err_str = str(e)
+        # 被动回复超时（5 分钟过期）
+        if "40034105" in err_str or "主动消息" in err_str or "过期" in err_str or "无效" in err_str:
+            logger.warning(f"[QQ] 被动回复发文件失败（可能已超5分钟有效期）: {fname}, {e}")
+        else:
+            logger.error(f"[QQ] 被动回复发文件异常: {fname}, {e}")
+        return False
+
+
 def _reply_text_and_files(message, text, file_paths):
-    """先回复文字，再提示已生成文件（QQ 官方暂不支持直接下发文件）"""
+    """先回复文字，再尝试被动回复发文件。
+
+    群聊：走被动回复通道（msg_id），文件类型 msg_type=7+media，不受主动消息限制；
+    私聊：同样走 message.reply() 被动通道；
+    若被动回复超时（5分钟有效期满）或失败，降级提示文件路径。
+    """
     _reply_text(message, text)
-    if file_paths:
-        paths_str = "\n".join(file_paths)
-        _reply_text(message, f"已生成以下文件（QQ端暂不支持直接下发，请到企微查看）：\n{paths_str}")
+    if not file_paths:
+        return
+
+    sent = []
+    failed = []
+    for fp in file_paths:
+        if _reply_file_passive(message, fp):
+            sent.append(fp)
+        else:
+            failed.append(fp)
+
+    if failed:
+        # 降级提示：文件可通过其他途径查看
+        names = "\n".join(os.path.basename(f) for f in failed)
+        _reply_text(message, f"以下文件未能发送（可能回复超时或格式限制），请通过其他方式查看：\n{names}")
+    if sent and not failed:
+        logger.info(f"[QQ] 被动回复 {len(sent)} 个文件全部发送成功")
+
+
+def qq_push_image_passive(message, image_b64: str, caption: str = "") -> tuple:
+    """面板群聊下发图片：走被动回复通道（复用最近 @ 的 msg_id）。
+
+    返回 (success, detail)
+    """
+    if not image_b64:
+        return False, "缺少图片数据"
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        return False, "QQ 客户端未运行"
+
+    # 去掉可能的 data:image/xxx;base64, 前缀
+    if "," in image_b64 and image_b64.strip().startswith("data:"):
+        image_b64 = image_b64.split(",", 1)[1]
+
+    import base64 as _b64
+    try:
+        raw_len = len(_b64.b64decode(image_b64))
+    except Exception:
+        return False, "图片 base64 解码失败"
+    if raw_len > 5 * 1024 * 1024:
+        return False, "图片超过 5MB，请压缩后重试"
+
+    try:
+        from botpy.http import Route
+        is_group = isinstance(message, GroupMessage)
+        openid = getattr(message, "group_openid", None) or getattr(getattr(message, "author", None), "user_openid", None)
+        if not openid:
+            return False, "缺少 openid"
+        # 1) 上传图片拿 media（file_type=1）
+        payload = {"file_type": 1, "file_data": image_b64, "srv_send_msg": False}
+        if is_group:
+            up_route = Route("POST", "/v2/groups/{group_openid}/files", group_openid=openid)
+        else:
+            up_route = Route("POST", "/v2/users/{openid}/files", openid=openid)
+        fut = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(up_route, json=payload), _QQ_LOOP
+        )
+        media = fut.result(timeout=30)
+        if not media or not media.get("file_info"):
+            return False, f"图片上传失败: {media}"
+        # 2) 被动回复富媒体消息（带 msg_id + msg_seq）
+        seq = _next_msg_seq(message)
+        msg_payload = {"msg_type": 7, "media": media, "msg_id": getattr(message, "id", None), "msg_seq": seq}
+        if caption:
+            msg_payload["content"] = caption[:300]
+        if is_group:
+            msg_route = Route("POST", "/v2/groups/{group_openid}/messages", group_openid=openid)
+        else:
+            msg_route = Route("POST", "/v2/users/{openid}/messages", openid=openid)
+        fut2 = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(msg_route, json=msg_payload), _QQ_LOOP
+        )
+        fut2.result(timeout=30)
+        logger.info(f"[QQ] 被动回复图片成功: {openid}")
+        return True, "图片发送成功"
+    except Exception as e:
+        err_str = str(e)
+        if "40034105" in err_str or "主动消息" in err_str or "过期" in err_str or "无效" in err_str:
+            logger.warning(f"[QQ] 被动回复发图片失败（可能已超5分钟有效期）: {e}")
+        else:
+            logger.error(f"[QQ] 被动回复发图片异常: {e}")
+        return False, str(e)
 
 
 # ========== botpy Client ==========
@@ -664,6 +934,12 @@ class QQOfficialClient(botpy.Client):
             content = re.sub(r"<@[^>]+>", "", content).strip()
             from_user = getattr(message.author, "member_openid", None) or "qq_group_user"
 
+            # 调试日志：记录 msg_id + group_openid（用于被动回复文件测试）
+            logger.info(
+                f"[QQ] 群消息: group_openid={getattr(message, 'group_openid', None)} "
+                f"msg_id={getattr(message, 'id', None)} content={content[:50]!r}"
+            )
+
             # 统计信息
             _update_status(last_message_at=time.strftime("%H:%M:%S"))
 
@@ -671,6 +947,8 @@ class QQOfficialClient(botpy.Client):
             group_openid = getattr(message, "group_openid", None)
             if group_openid:
                 _remember_session("group", group_openid)
+                # 记录最近 @ 消息 msg_id（面板群聊下发走被动回复复用）
+                _remember_group_msg(group_openid, getattr(message, "id", None))
 
             # 图片附件处理
             file_paths = []
@@ -752,6 +1030,10 @@ def _start_internal_http():
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length).decode("utf-8"))
+                # 特殊测试路由：/replyfile —— 用真实 msg_id 走被动回复发文件（绕过 AI）
+                if self.path == "/replyfile":
+                    self._handle_reply_file(body)
+                    return
                 target = body.get("target", "")
                 content = body.get("content", "")
                 openid = body.get("openid", "")
@@ -759,6 +1041,71 @@ def _start_internal_http():
                 caption = body.get("caption", "")
                 file_b64 = body.get("file", "")  # 可选：文件 base64
                 filename = body.get("filename", "")  # 可选：文件名
+                # 群聊下发：官方已下线群主动推送，统一走被动回复通道（复用最近 @ 的 msg_id）
+                if target == "group":
+                    rec = _get_last_group_msg(openid)
+                    if not rec:
+                        resp = json.dumps({
+                            "success": False,
+                            "error": "该群最近5分钟内没有 @ 机器人，请先在群内 @ 机器人一下，再重新发送",
+                        }).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(resp)))
+                        self.end_headers()
+                        self.wfile.write(resp)
+                        return
+                    # 构造带 msg_id 的被动回复消息（复用 _reply_* 逻辑）
+                    from botpy.message import GroupMessage
+                    class _FakeAuthor:
+                        member_openid = "panel"
+                    fake = GroupMessage.__new__(GroupMessage)
+                    fake.group_openid = openid
+                    fake.id = rec["msg_id"]
+                    fake.author = _FakeAuthor()
+                    if file_b64:
+                        # 文件：base64 → 临时落盘 → 被动回复发文件
+                        import base64 as _b64
+                        import tempfile
+                        tmp_path = ""
+                        try:
+                            raw = _b64.b64decode(file_b64)
+                            tmp_path = os.path.join(tempfile.gettempdir(), f"qq_panel_{int(time.time()*1000)}_{filename or 'file'}")
+                            with open(tmp_path, "wb") as f:
+                                f.write(raw)
+                            ok = _reply_file_passive(fake, tmp_path)
+                            detail = "" if ok else "被动回复发文件失败（可能已超过5分钟有效期），见日志"
+                        finally:
+                            if tmp_path and os.path.exists(tmp_path):
+                                try: os.remove(tmp_path)
+                                except Exception: pass
+                        resp = json.dumps({"success": ok, "error": detail if not ok else ""}).encode("utf-8")
+                        self.send_response(200)
+                        self.send_header("Content-Type", "application/json; charset=utf-8")
+                        self.send_header("Content-Length", str(len(resp)))
+                        self.end_headers()
+                        self.wfile.write(resp)
+                        return
+                    elif image_b64:
+                        ok, detail = qq_push_image_passive(fake, image_b64, caption)
+                    else:
+                        fut = _reply_text(fake, content)
+                        # _reply_text 返回 Future（异步）或 None（失败），统一解析为布尔
+                        if fut is not None and hasattr(fut, "result"):
+                            try:
+                                fut.result(timeout=30)
+                                ok, detail = True, ""
+                            except Exception as e:
+                                ok, detail = False, f"被动回复文本失败: {e}"
+                        else:
+                            ok, detail = False, "被动回复文本失败"
+                    resp = json.dumps({"success": ok, "error": detail if not ok else ""}).encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json; charset=utf-8")
+                    self.send_header("Content-Length", str(len(resp)))
+                    self.end_headers()
+                    self.wfile.write(resp)
+                    return
                 if file_b64:
                     # 文件推送
                     ok, detail = qq_push_file(target, openid, file_b64, filename, caption)
@@ -789,6 +1136,38 @@ def _start_internal_http():
 
         def log_message(self, format, *args):
             pass  # 静默，不打印内部接口日志
+
+        def _handle_reply_file(self, body):
+            """测试路由：用真实 msg_id 走被动回复发文件（绕过 AI 环节）。
+            入参：group_openid, msg_id, file_path（本机绝对路径）
+            """
+            try:
+                group_openid = body.get("group_openid", "")
+                msg_id = body.get("msg_id", "")
+                file_path = body.get("file_path", "")
+                if not group_openid or not msg_id or not file_path:
+                    self._send_json({"success": False, "error": "缺少 group_openid/msg_id/file_path"})
+                    return
+                from botpy.message import GroupMessage
+                # 构造最小 GroupMessage（仅测试被动回复通道）
+                class _FakeAuthor:
+                    member_openid = "FAB0F1DD3BF78BA136E426153F06EAAA"
+                fake = GroupMessage.__new__(GroupMessage)
+                fake.group_openid = group_openid
+                fake.id = msg_id
+                fake.author = _FakeAuthor()
+                ok = _reply_file_passive(fake, file_path)
+                self._send_json({"success": ok, "error": "" if ok else "被动回复发文件失败，见日志"})
+            except Exception as e:
+                self._send_json({"success": False, "error": str(e)})
+
+        def _send_json(self, obj):
+            resp = json.dumps(obj).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(resp)))
+            self.end_headers()
+            self.wfile.write(resp)
 
     try:
         httpd = HTTPServer(("127.0.0.1", QQ_PUSH_PORT), _QQPushHandler)

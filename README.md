@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'cf52b3c7-2857-4a51-9781-a8f19105f453'
-  PropagateID: 'cf52b3c7-2857-4a51-9781-a8f19105f453'
-  ReservedCode1: '550b517f-a10a-48bd-88b4-1678b553cc4a'
-  ReservedCode2: '550b517f-a10a-48bd-88b4-1678b553cc4a'
+  ProduceID: 'ff27fc20-1f8c-41c8-b893-5bb1d1d9b799'
+  PropagateID: 'ff27fc20-1f8c-41c8-b893-5bb1d1d9b799'
+  ReservedCode1: '632043f3-7f21-4aac-b998-8afb049224e4'
+  ReservedCode2: '632043f3-7f21-4aac-b998-8afb049224e4'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -105,6 +105,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 |------|------|------|
+| v1.5.10 | 2026-08-17 | 面板→QQ群下发打通（被动回复通道）：自动复用最近5分钟内@的msg_id发文本/图片/文件，重启持久化 |
 | v1.5.9 | 2026-08-16 | QQ文件支持>5MB分片上传（官方upload_prepare→PUT→part_finish→files，上限200MB） |
 | v1.5.8 | 2026-08-16 | 修复QQ文件推送文件名丢失（上传带 file_name，不再显示"未命名"） |
 | v1.5.7 | 2026-08-16 | 新增QQ主动发送文件（base64→官方v2文件接口→富媒体消息，≤5MB） |
