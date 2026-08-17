@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '5886127f-a5a6-455f-930e-f922bc9d372b'
-  PropagateID: '5886127f-a5a6-455f-930e-f922bc9d372b'
-  ReservedCode1: '45d3891b-2663-4a3f-8ca2-252dcdc5b0c9'
-  ReservedCode2: '45d3891b-2663-4a3f-8ca2-252dcdc5b0c9'
+  ProduceID: '276cc2be-d0b8-4561-a0e2-86f11e74fd38'
+  PropagateID: '276cc2be-d0b8-4561-a0e2-86f11e74fd38'
+  ReservedCode1: 'fa3851ea-db55-47ae-9cb0-08c93405633f'
+  ReservedCode2: 'fa3851ea-db55-47ae-9cb0-08c93405633f'
 ---
 
 # 更新日志
@@ -68,6 +68,20 @@ AIGC:
 ### 备注
 - 被动回复有效期 5 分钟（官方限制），超过需群内重新 @ 机器人
 - 群聊文本被动回复也走 `msg_id` 通道（`msg_type=0` + `msg_seq` 递增），不再调用已被官方下线的主动推送接口
+
+---
+
+## v1.6.1 (2026-08-17)
+
+**事件回调落地到面板**：8 个管理事件（机器人进群/退群、好友增删、群聊/单聊主动消息权限开关）现在会实时记录到面板「消息记录」，以「事件」标签（橙色）展示。
+
+### 变更内容
+- **qq_official_adapter.py**：8 个事件回调（`on_group_add`/`on_group_del`/`on_friend_add`/`on_friend_del`/`on_group_msg_receive`/`on_group_msg_reject`/`on_c2c_msg_receive`/`on_c2c_msg_reject`）全部接入 `_record_message("event", ...)`，status 为「事件」，scene 区分 group/single
+- 新增 `_short_openid()`：openid 过长时截取首尾展示（如 `38F8A2AB...6DA278`），避免表格撑爆
+- **dashboard.py**：新增 `.tag-event` 橙色样式，`tagClass` 增加 `event`/`system` 映射
+
+### 备注
+- 事件记录与消息记录同存 `qq_messages.json`，面板自动合并展示，无需额外 IPC
 
 ---
 

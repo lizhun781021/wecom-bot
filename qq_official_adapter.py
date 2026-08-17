@@ -218,6 +218,15 @@ def _display_name(openid: str, max_len: int = 40) -> str:
     return str(name)[:max_len]
 
 
+def _short_openid(openid: str, max_len: int = 10) -> str:
+    """openid 太长，截取首尾用于展示（如 38F8A2AB...6DA278）"""
+    if not openid:
+        return ""
+    if len(openid) <= max_len * 2:
+        return openid
+    return f"{openid[:max_len]}...{openid[-max_len:]}"
+
+
 def _record_message(msg_type: str, user: str, preview: str, status: str = "处理中", scene: str = ""):
     """记录一条 QQ 消息（内存+落盘），供 dashboard（独立进程）合并展示
 
@@ -1273,6 +1282,7 @@ class QQOfficialClient(botpy.Client):
             gid = getattr(event, "group_openid", None) or ""
             op = getattr(event, "op_member_openid", None) or ""
             logger.info(f"[QQ] 机器人被拉入群聊: group={gid} op={_display_name(op)}")
+            _record_message("event", _display_name(op), f"机器人被拉入群聊 (群 {_short_openid(gid)})", status="事件", scene="group")
             # 尝试发一条欢迎消息（被动回复需 event_id；此处用主动消息尝试，失败不阻塞）
             try:
                 from botpy.http import Route
@@ -1301,6 +1311,7 @@ class QQOfficialClient(botpy.Client):
             gid = getattr(event, "group_openid", None) or ""
             op = getattr(event, "op_member_openid", None) or ""
             logger.info(f"[QQ] 机器人被移出群聊: group={gid} op={_display_name(op)}")
+            _record_message("event", _display_name(op), f"机器人被移出群聊 (群 {_short_openid(gid)})", status="事件", scene="group")
             # 清理该群的被动回复记录
             with QQ_LAST_GROUP_MSG_LOCK:
                 QQ_LAST_GROUP_MSG.pop(gid, None)
@@ -1314,6 +1325,7 @@ class QQOfficialClient(botpy.Client):
         try:
             uid = getattr(event, "openid", None) or ""
             logger.info(f"[QQ] 用户添加机器人好友: {_display_name(uid)}")
+            _record_message("event", _display_name(uid), "用户添加机器人好友", status="事件", scene="single")
             _remember_session("user", uid)
         except Exception as e:
             logger.error(f"[QQ] on_friend_add 异常: {e}")
@@ -1323,6 +1335,7 @@ class QQOfficialClient(botpy.Client):
         try:
             uid = getattr(event, "openid", None) or ""
             logger.info(f"[QQ] 用户删除机器人好友: {_display_name(uid)}")
+            _record_message("event", _display_name(uid), "用户删除机器人好友", status="事件", scene="single")
             QQ_SESSION.get("user", {}).pop(uid, None)
             _persist_status()
         except Exception as e:
@@ -1334,6 +1347,7 @@ class QQOfficialClient(botpy.Client):
             gid = getattr(event, "group_openid", None) or ""
             op = getattr(event, "op_member_openid", None) or ""
             logger.info(f"[QQ] 群聊开启主动消息: group={gid} op={_display_name(op)}")
+            _record_message("event", _display_name(op), f"群聊开启主动消息权限 (群 {_short_openid(gid)})", status="事件", scene="group")
         except Exception as e:
             logger.error(f"[QQ] on_group_msg_receive 异常: {e}")
 
@@ -1342,6 +1356,7 @@ class QQOfficialClient(botpy.Client):
         try:
             gid = getattr(event, "group_openid", None) or ""
             logger.info(f"[QQ] 群聊拒绝主动消息: group={gid}")
+            _record_message("event", "-", f"群聊拒绝主动消息权限 (群 {_short_openid(gid)})", status="事件", scene="group")
         except Exception as e:
             logger.error(f"[QQ] on_group_msg_reject 异常: {e}")
 
@@ -1350,6 +1365,7 @@ class QQOfficialClient(botpy.Client):
         try:
             uid = getattr(event, "openid", None) or ""
             logger.info(f"[QQ] 用户开启单聊主动消息: {_display_name(uid)}")
+            _record_message("event", _display_name(uid), "用户开启单聊主动消息权限", status="事件", scene="single")
         except Exception as e:
             logger.error(f"[QQ] on_c2c_msg_receive 异常: {e}")
 
@@ -1358,6 +1374,7 @@ class QQOfficialClient(botpy.Client):
         try:
             uid = getattr(event, "openid", None) or ""
             logger.info(f"[QQ] 用户拒绝单聊主动消息: {_display_name(uid)}")
+            _record_message("event", _display_name(uid), "用户拒绝单聊主动消息", status="事件", scene="single")
         except Exception as e:
             logger.error(f"[QQ] on_c2c_msg_reject 异常: {e}")
 

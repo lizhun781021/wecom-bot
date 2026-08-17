@@ -241,6 +241,7 @@ tr:hover { background: #162232; }
 .tag-file { background: #3b3b1e; color: #fbbf24; }
 .tag-voice { background: #1e2b3b; color: #67e8f9; }
 .tag-video { background: #3b1e1e; color: #f87171; }
+.tag-event { background: #3b301e; color: #fbbf24; }
 .tag-qq { background: #1e3a2f; color: #34d399; }
 .tag-group { background: #1e3a5f; color: #60a5fa; }
 .tag-single { background: #3b1e3f; color: #c084fc; }
@@ -407,7 +408,7 @@ tr:hover { background: #162232; }
 
 <script>
 function tagClass(t) {
-  const m = {'text':'tag-text','image':'tag-image','mixed':'tag-mixed','file':'tag-file','voice':'tag-voice','video':'tag-video'};
+  const m = {'text':'tag-text','image':'tag-image','mixed':'tag-mixed','file':'tag-file','voice':'tag-voice','video':'tag-video','event':'tag-event','system':'tag-event'};
   return m[t] || 'tag-text';
 }
 function statusClass(s) {
