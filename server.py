@@ -115,19 +115,194 @@ def send_ws_message(ws, cmd, body, req_id=None):
     return req_id
 
 
-def reply_stream(ws, req_id, content, stream_id=None, finish=True):
-    """用流式消息回复（企微长连接不支持text类型回复，必须用stream）"""
+def reply_stream(ws, req_id, content, stream_id=None, finish=True, feedback_id=None):
+    """用流式消息回复（企微长连接不支持text类型回复，必须用stream）
+    feedback_id: 可选，设置后用户可对消息点赞/点踩，反馈事件会回调给机器人
+    """
     if stream_id is None:
         stream_id = gen_req_id()
+    stream_body = {
+        "id": stream_id,
+        "finish": finish,
+        "content": content
+    }
+    if feedback_id:
+        stream_body["feedback"] = {"id": feedback_id[:256]}
     send_ws_message(ws, "aibot_respond_msg", {
         "msgtype": "stream",
-        "stream": {
-            "id": stream_id,
-            "finish": finish,
-            "content": content
-        }
+        "stream": stream_body
     }, req_id)
     return stream_id
+
+
+def reply_markdown(ws, req_id, content, feedback_id=None):
+    """用 Markdown 消息回复（支持标题/加粗/列表/表格/代码等格式）
+
+    Args:
+        content: Markdown 内容，最长 20480 字节（utf-8）
+        feedback_id: 可选，设置后用户可对消息点赞/点踩，反馈事件会回调给机器人
+    """
+    markdown_body = {"content": content[:20480]}
+    if feedback_id:
+        markdown_body["feedback"] = {"id": feedback_id[:256]}
+    send_ws_message(ws, "aibot_respond_msg", {
+        "msgtype": "markdown",
+        "markdown": markdown_body
+    }, req_id)
+
+
+def reply_template_card(ws, req_id, card):
+    """回复模板卡片消息（aibot_respond_msg 的 template_card 类型）"""
+    send_ws_message(ws, "aibot_respond_msg", {
+        "msgtype": "template_card",
+        "template_card": card
+    }, req_id)
+
+
+def reply_welcome(ws, msgtype="text", content="", card=None):
+    """回复进入会话欢迎语（enter_chat 事件后 5 秒内）
+    支持文本消息或模板卡片消息两种形式。
+    """
+    if msgtype == "template_card" and card:
+        send_ws_message(ws, "aibot_respond_welcome_msg", {
+            "msgtype": "template_card",
+            "template_card": card
+        })
+    else:
+        send_ws_message(ws, "aibot_respond_welcome_msg", {
+            "msgtype": "text",
+            "text": {"content": content}
+        })
+
+
+def update_template_card(ws, req_id, card):
+    """更新模板卡片（template_card_event 事件后 5 秒内）
+    仅适用于模板卡片点击事件，其他事件类型不支持。
+    """
+    send_ws_message(ws, "aibot_respond_update_msg", {
+        "response_type": "update_template_card",
+        "template_card": card
+    }, req_id)
+
+
+def send_push_message(ws, chatid, msgtype, payload, chat_type=0):
+    """主动推送消息（aibot_send_msg）
+    前置条件：用户必须先给机器人发过消息（会话已建立）。
+
+    Args:
+        chatid: 单聊填 userid，群聊填 chatid
+        chat_type: 1=单聊 2=群聊 0=自动兼容（优先按群聊）
+        msgtype: template_card / markdown / file / image / voice / video
+        payload: 对应类型的消息体，如 {"content": "..."} 或 {"media_id": "..."}
+    """
+    body = {
+        "chatid": chatid,
+        "chat_type": chat_type,
+        "msgtype": msgtype,
+        msgtype: payload
+    }
+    send_ws_message(ws, "aibot_send_msg", body)
+
+
+# ========== 模板卡片构造 ==========
+
+def build_text_notice_card(main_title, sub_title_text="", card_action=None,
+                           source=None, emphasis_content=None, horizontal_content_list=None,
+                           jump_list=None, task_id="", action_menu=None):
+    """文本通知模板卡片（text_notice）
+    卡片点击跳转事件 card_action 为必填项。
+    """
+    card = {"card_type": "text_notice"}
+    if source:
+        card["source"] = source
+    if action_menu:
+        card["action_menu"] = action_menu
+    if main_title:
+        card["main_title"] = main_title
+    if emphasis_content:
+        card["emphasis_content"] = emphasis_content
+    if sub_title_text:
+        card["sub_title_text"] = sub_title_text
+    if horizontal_content_list:
+        card["horizontal_content_list"] = horizontal_content_list
+    if jump_list:
+        card["jump_list"] = jump_list
+    if card_action:
+        card["card_action"] = card_action
+    if task_id:
+        card["task_id"] = task_id
+    return card
+
+
+def build_news_notice_card(main_title, sub_title_text="", source_id=None,
+                           horizontal_content_list=None, jump_list=None,
+                           card_action=None, task_id=""):
+    """图文展示模板卡片（news_notice）"""
+    card = {"card_type": "news_notice"}
+    if source_id:
+        card["source"] = source_id
+    if main_title:
+        card["main_title"] = main_title
+    if sub_title_text:
+        card["sub_title_text"] = sub_title_text
+    if horizontal_content_list:
+        card["horizontal_content_list"] = horizontal_content_list
+    if jump_list:
+        card["jump_list"] = jump_list
+    if card_action:
+        card["card_action"] = card_action
+    if task_id:
+        card["task_id"] = task_id
+    return card
+
+
+def build_button_interaction_card(main_title, button_list, task_id, sub_title_text="",
+                                  horizontal_content_list=None, card_action=None,
+                                  button_selection=None):
+    """按钮交互模板卡片（button_interaction）
+    注意：机器人设置了回调URL时才能下发，长连接模式可能不支持，需实测。
+    """
+    card = {
+        "card_type": "button_interaction",
+        "main_title": main_title,
+        "button_list": button_list,
+        "task_id": task_id
+    }
+    if sub_title_text:
+        card["sub_title_text"] = sub_title_text
+    if horizontal_content_list:
+        card["horizontal_content_list"] = horizontal_content_list
+    if card_action:
+        card["card_action"] = card_action
+    if button_selection:
+        card["button_selection"] = button_selection
+    return card
+
+
+def build_vote_interaction_card(main_title, checkbox, submit_button, task_id):
+    """投票选择模板卡片（vote_interaction）
+    注意：机器人设置了回调URL时才能下发，长连接模式可能不支持，需实测。
+    """
+    return {
+        "card_type": "vote_interaction",
+        "main_title": main_title,
+        "checkbox": checkbox,
+        "submit_button": submit_button,
+        "task_id": task_id
+    }
+
+
+def build_multiple_interaction_card(main_title, select_list, submit_button, task_id):
+    """多项选择模板卡片（multiple_interaction）
+    注意：机器人设置了回调URL时才能下发，长连接模式可能不支持，需实测。
+    """
+    return {
+        "card_type": "multiple_interaction",
+        "main_title": main_title,
+        "select_list": select_list,
+        "submit_button": submit_button,
+        "task_id": task_id
+    }
 
 
 # ========== 多媒体资源解密 ==========
@@ -579,9 +754,9 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     # 构建prompt：文件路径+文字原文
     prompt = build_prompt(file_paths, text_content, user_name)
 
-    # 会话标题：姓名 | 技能 | 时间
+    # 会话标题：姓名 | 企微机器人 | 时间
     time_str = time.strftime("%H:%M")
-    session_title = f"{user_name} | 河南标准化赋能 | {time_str}"
+    session_title = f"{user_name} | 企微机器人 | {time_str}"
 
     has_files = bool(file_paths)
     logger.info(f"开始调用TeleAgent, 调用人={user_name}, 有文件={has_files}")
@@ -968,6 +1143,138 @@ def _upload_and_send_files_async(ws, req_id, files_to_send):
 
 
 # ========== 消息处理 ==========
+# 内置测试指令：用于实机验证 markdown/模板卡片/主动推送等新能力
+# 只在单聊生效，避免群聊刷屏
+BUILTIN_CMD_MAP = {
+    "/md": "markdown 消息测试",
+    "/card": "模板卡片测试",
+    "/btn": "按钮交互卡片测试",
+    "/vote": "投票卡片测试",
+    "/multi": "多项选择卡片测试",
+    "/push": "主动推送测试",
+    "/fd": "反馈事件测试",
+    "/table": "智能表格建表测试",
+}
+
+
+def handle_builtin_cmd(ws, req_id, text_content, from_user, chattype):
+    """处理内置测试指令，返回 True 表示已处理"""
+    cmd = text_content.strip().split()[0] if text_content.strip() else ""
+    if cmd not in BUILTIN_CMD_MAP:
+        return False
+    # 只在单聊或测试群生效，避免打扰
+    if chattype == "group" and from_user not in getattr(config, "WECOM_ADMIN_USERIDS", []):
+        return False
+
+    if cmd == "/md":
+        reply_markdown(ws, req_id, (
+            "# 星小辰 Markdown 测试\n"
+            "## 标题\n"
+            "**加粗** *斜体* `行内代码`\n\n"
+            "### 列表\n"
+            "- 图片分析\n"
+            "- 文件处理\n"
+            "- 配餐推荐\n\n"
+            "### 表格\n"
+            "| 功能 | 状态 |\n"
+            "| :--- | :---: |\n"
+            "| Markdown | ✅ 可用 |\n"
+            "| 模板卡片 | ✅ 可用 |\n"
+            "| 主动推送 | ✅ 可用 |\n\n"
+            "> 本消息由 **星小辰** 生成"
+        ), feedback_id=f"md_{int(time.time())}")
+    elif cmd == "/card":
+        card = build_text_notice_card(
+            main_title={"title": "配餐方案已生成", "desc": "客户 139****0000"},
+            sub_title_text="推荐套餐：129元5G融合，月省30元，建议尽快联系客户办理。",
+            emphasis_content={"title": "129", "desc": "推荐月费(元)"},
+            horizontal_content_list=[
+                {"keyname": "当前套餐", "value": "99元不限量"},
+                {"keyname": "提值空间", "value": "30元/月"},
+                {"keyname": "配餐路径", "value": "平替升级"}
+            ],
+            card_action={"type": 1, "url": "https://work.weixin.qq.com/"},
+            task_id=f"card_{int(time.time())}"
+        )
+        reply_template_card(ws, req_id, card)
+    elif cmd == "/btn":
+        card = build_button_interaction_card(
+            main_title={"title": "请确认配餐方案", "desc": "客户 139****0000 是否同意升级？"},
+            button_list=[
+                {"text": "同意办理", "style": 1, "key": "agree"},
+                {"text": "再考虑", "style": 2, "key": "consider"},
+                {"text": "拒绝", "style": 3, "key": "reject"}
+            ],
+            task_id=f"btn_{int(time.time())}"
+        )
+        reply_template_card(ws, req_id, card)
+    elif cmd == "/vote":
+        card = build_vote_interaction_card(
+            main_title={"title": "服务满意度调查", "desc": "您对本次服务是否满意？"},
+            checkbox={
+                "question_key": "satisfaction",
+                "option_list": [
+                    {"id": "sat", "text": "满意", "is_checked": False},
+                    {"id": "unsat", "text": "不满意", "is_checked": False}
+                ],
+                "disable": False,
+                "mode": 1
+            },
+            submit_button={"text": "提交", "key": "submit_key"},
+            task_id=f"vote_{int(time.time())}"
+        )
+        reply_template_card(ws, req_id, card)
+    elif cmd == "/multi":
+        card = build_multiple_interaction_card(
+            main_title={"title": "需求调查", "desc": "您最关心哪些功能？"},
+            select_list=[{
+                "question_key": "features",
+                "title": "请选择",
+                "disable": False,
+                "selected_id": "doc",
+                "option_list": [
+                    {"id": "doc", "text": "报告生成"},
+                    {"id": "sheet", "text": "表格处理"},
+                    {"id": "ai", "text": "AI分析"}
+                ]
+            }],
+            submit_button={"text": "提交", "key": "submit_key"},
+            task_id=f"multi_{int(time.time())}"
+        )
+        reply_template_card(ws, req_id, card)
+    elif cmd == "/push":
+        send_push_message(ws, from_user, "markdown", {
+            "content": "这是一条**主动推送**消息，由定时任务或后台触发。"
+        }, chat_type=1 if chattype == "single" else 2)
+    elif cmd == "/fd":
+        # 反馈测试：发一条带 feedback_id 的流式消息，用户可在气泡下方点赞/点踩
+        reply_stream(ws, req_id,
+                     "这是一条**带反馈**的消息。\n如果你觉得这条消息有帮助，请在下方点【准确】；\n如果觉得不准确，点【不准确】并选择原因。\n\n这条消息的反馈ID会触发 feedback_event 事件。",
+                     finish=True, feedback_id=f"fd_{int(time.time())}")
+    elif cmd == "/table":
+        # 智能表格建表测试：MCP 方式一键创建带表头的智能表格
+        try:
+            reply_stream(ws, req_id, "正在创建智能表格，请稍候...", finish=False)
+            result = wecom_api.create_smart_sheet_with_headers(
+                f"星小辰配餐台账_{time.strftime('%m%d%H%M')}",
+                ["时间", "处理人", "客户号码", "金额", "备注"]
+            )
+            if result.get("success"):
+                reply_stream(ws, req_id,
+                             f"智能表格创建成功！\n表格地址：{result.get('url', '')}\n\n"
+                             f"表格名称：配餐台账\n表头：时间 / 处理人 / 客户号码 / 金额 / 备注\n\n"
+                             f"发「写入一行测试数据」可继续验证写入。",
+                             finish=True)
+                logger.info(f"智能表格建表成功: docid={result.get('docid')} sheet_id={result.get('sheet_id')}")
+            else:
+                reply_stream(ws, req_id, f"智能表格创建失败：{result.get('error', '未知错误')}", finish=True)
+                logger.error(f"智能表格建表失败: {result.get('error')}")
+        except Exception as e:
+            logger.error(f"/table 指令异常: {e}")
+            reply_stream(ws, req_id, f"智能表格创建异常：{e}", finish=True)
+    return True
+
+
 def handle_text_message(ws, msg, req_id):
     """处理文字消息：统一走TeleAgent代理回复"""
     body = msg.get("body", {})
@@ -978,6 +1285,11 @@ def handle_text_message(ws, msg, req_id):
     logger.info(f"收到文字消息: from={from_user}, chattype={chattype}, content={text_content[:50]}")
     user_name = get_user_name(from_user)
     dashboard.add_message_record("text", user_name, text_content[:80], "处理中", scene=chattype)
+
+    # 先检查内置测试指令
+    if handle_builtin_cmd(ws, req_id, text_content, from_user, chattype):
+        dashboard.update_message_status(0, "已回复(指令)")
+        return
 
     # 先检查待发文件队列
     if flush_pending_files(ws, req_id):
@@ -1347,20 +1659,69 @@ def on_message(ws, message):
             body_dict = msg.get("body", {})
             event = body_dict.get("event", {})
             eventtype = event.get("eventtype", "")
+            from_user = body_dict.get("from", {}).get("userid", "")
+            user_name = get_user_name(from_user) if from_user else "未知"
+            chattype = body_dict.get("chattype", "")
 
             if eventtype == "enter_chat":
-                logger.info(f"用户进入会话: {body_dict.get('from', {}).get('userid')}")
-                send_ws_message(ws, "aibot_respond_welcome_msg", {
-                    "msgtype": "text",
-                    "text": {"content": "你好！我是星小辰机器人，可以接收图片、文件等消息。发张图片试试？"}
-                })
+                logger.info(f"用户进入会话: {from_user}")
+                dashboard.add_message_record("event", user_name, "进入会话", "已回复欢迎语", scene=chattype)
+                # 回复欢迎语（模板卡片形式，带操作按钮）
+                welcome_card = build_text_notice_card(
+                    main_title={"title": "欢迎使用星小辰", "desc": "您的AI办公助手已上线"},
+                    sub_title_text="我可以帮你分析配餐方案、处理图片文件、生成报告文档，发消息即可开始体验。",
+                    card_action={"type": 1, "url": "https://work.weixin.qq.com/"},
+                    horizontal_content_list=[
+                        {"keyname": "图片分析", "value": "发图片试试"},
+                        {"keyname": "文件处理", "value": "发文档试试"},
+                        {"keyname": "配餐推荐", "value": "说出需求"}
+                    ],
+                    task_id=f"welcome_{int(time.time())}"
+                )
+                reply_welcome(ws, msgtype="template_card", card=welcome_card)
             elif eventtype == "disconnected_event":
                 logger.warning("收到连接断开事件，停止心跳等待重连")
                 stop_heartbeat()
             elif eventtype == "template_card_event":
-                logger.info("收到模板卡片事件")
+                # 用户点击了模板卡片按钮/选择项，需在5秒内回复更新卡片
+                card_event = event.get("template_card_event", {})
+                card_type = card_event.get("card_type", "")
+                event_key = card_event.get("event_key", "")
+                task_id = card_event.get("task_id", "")
+                selected_items = card_event.get("selected_items", {})
+                logger.info(f"收到模板卡片事件: card_type={card_type}, event_key={event_key}, task_id={task_id}")
+                dashboard.add_message_record("event", user_name, f"卡片点击: {event_key}", "已处理", scene=chattype)
+                try:
+                    # 构造更新后的卡片（把按钮置灰/标记已选，防止重复点击）
+                    updated_card = {
+                        "card_type": card_type,
+                        "task_id": task_id,
+                        "main_title": {"title": "已收到您的选择", "desc": f"您点击了: {event_key}"},
+                        "sub_title_text": "感谢反馈，如需继续操作请重新发送消息。"
+                    }
+                    update_template_card(ws, req_id, updated_card)
+                except Exception as e:
+                    logger.error(f"更新模板卡片失败: {e}")
             elif eventtype == "feedback_event":
-                logger.info("收到用户反馈事件")
+                # 用户对AI回复点赞/点踩
+                feedback = event.get("feedback_event", {})
+                fb_id = feedback.get("id", "")
+                fb_type = feedback.get("type", 0)
+                content = feedback.get("content", "")
+                reason_list = feedback.get("inaccurate_reason_list", [])
+                type_map = {1: "准确", 2: "不准确", 3: "取消准确/不准确"}
+                reason_map = {1: "与问题无关", 2: "内容不完整", 3: "内容有错误", 4: "数据分析错误"}
+                reasons = "、".join([reason_map.get(r, str(r)) for r in reason_list])
+                logger.info(
+                    f"收到用户反馈: id={fb_id}, type={type_map.get(fb_type, fb_type)}, "
+                    f"content={content}, reasons={reasons}"
+                )
+                fb_preview = f"反馈[{type_map.get(fb_type, fb_type)}]"
+                if content:
+                    fb_preview += f": {content[:30]}"
+                if reasons:
+                    fb_preview += f" ({reasons})"
+                dashboard.add_message_record("event", user_name, fb_preview, "已记录", scene=chattype)
             else:
                 logger.info(f"收到事件: {eventtype}")
             return

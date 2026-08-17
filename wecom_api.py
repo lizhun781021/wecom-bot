@@ -478,6 +478,220 @@ def create_wecom_doc(doc_name, markdown_content):
 
 
 # ============================================================
+# 功能4：API模式文档能力（智能表格 smartsheet 系列）
+# ============================================================
+# 企微「智能机器人 → API模式 → 文档能力」以 MCP 方式暴露（create_doc /
+# edit_doc_content / smartsheet_add_sheet / get_sheet / add_fields /
+# update_fields / get_fields / add_records）。
+# 调用前置条件：
+#   1. 管理后台 → 智能机器人 → 编辑 → 可使用权限 → 授权「文档」
+#      （成员授权有效期 7 天，过期需重新授权）
+#   2. 拿到 streamableHTTP URL 或 JSON Config 后配置到本模块
+# 机器人只能编辑自己创建的文档。
+#
+# 本模块提供两层封装：
+#   - smartsheet_* 系列：直接按 MCP 工具语义封装（HTTP 调用）
+#   - create_smartsheet_with_headers()：一键创建"带表头的智能表格"
+#     （内部自动处理"默认字段重命名"的坑）
+
+# MCP 服务地址（streamableHTTP URL 或 JSON Config 里提取）
+MCP_BASE_URL = getattr(config, "WECOM_MCP_URL", "").rstrip("/")
+
+
+def _mcp_call(tool_name, arguments, timeout=60):
+    """调用企微文档 MCP 工具（streamableHTTP JSON-RPC 格式）
+
+    Args:
+        tool_name: doc_create / doc_contents_overwrite / smartsheet_sheets_list /
+                   smartsheet_fields_list / smartsheet_fields_add /
+                   smartsheet_records_add 等（实际暴露的工具名，与官方文档名不同）
+        arguments: dict，工具入参（与 MCP schema 一致）
+
+    Returns:
+        dict: {"success": bool, "data": dict, "error": str}
+    """
+    if not MCP_BASE_URL:
+        return {"success": False, "data": {}, "error": "未配置 WECOM_MCP_URL（请先在企微后台授权文档能力并填入 streamableHTTP URL）"}
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": int(time.time() * 1000) % 100000000,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": arguments
+        }
+    }
+    # 必须带 Accept: application/json, text/event-stream，否则返回 HTTP 406
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    # 若在 config 中配置了 Bearer Token（JSON Config 里通常有），则带上
+    mcp_token = getattr(config, "WECOM_MCP_TOKEN", "")
+    if mcp_token:
+        headers["Authorization"] = f"Bearer {mcp_token}"
+
+    try:
+        resp = requests.post(MCP_BASE_URL, json=payload, headers=headers, timeout=timeout)
+        result = resp.json()
+        # MCP 返回格式：{"jsonrpc":"2.0","id":...,"result":{"content":[{"type":"text","text":"..."}]}}
+        content_list = result.get("result", {}).get("content", [])
+        if content_list:
+            text = content_list[0].get("text", "{}")
+            try:
+                data = json.loads(text)
+            except Exception:
+                data = {"raw": text}
+            if data.get("errcode", 0) == 0 or "docid" in data or "url" in data:
+                return {"success": True, "data": data, "error": ""}
+            return {"success": False, "data": data, "error": data.get("errmsg", text)}
+        # 没有 content 说明是错误响应
+        error_info = result.get("error", {})
+        return {"success": False, "data": {}, "error": error_info.get("message", json.dumps(result, ensure_ascii=False)[:200])}
+    except Exception as e:
+        logger.error(f"MCP调用异常 [{tool_name}]: {e}")
+        return {"success": False, "data": {}, "error": str(e)}
+
+
+def mcp_create_doc(doc_name, doc_type="doc", content="", fields=None, sheet_title=None):
+    """新建文档/表格/智能表格（MCP 工具 doc_create）
+
+    Args:
+        doc_name: 文档标题
+        doc_type: "doc" / "sheet" / "smartsheet"（字符串，实测确认，非整数）
+        content: 初始纯文本内容（doc 时有效）
+        fields: 初始化字段列表，doc_type=smartsheet 时有效
+        sheet_title: 子表名称，doc_type=smartsheet 时必须传（实测确认必填）
+
+    Returns:
+        dict: {"success": bool, "data": dict, "error": str}
+    """
+    args = {"doc_name": doc_name, "doc_type": doc_type, "content": ""}
+    if fields:
+        args["fields"] = fields
+    if sheet_title:
+        args["sheet_title"] = sheet_title
+    return _mcp_call("doc_create", args)
+
+
+def mcp_overwrite_doc_content(docid, content, content_type="markdown"):
+    """全量覆盖 Word 文档内容（MCP 工具名 doc_contents_overwrite）"""
+    return _mcp_call("doc_contents_overwrite", {
+        "docid": docid, "content": content, "content_type": content_type
+    })
+
+
+def mcp_smartsheet_get_sheets(docid):
+    """查询智能表格子表列表（MCP 工具名 smartsheet_sheets_list）"""
+    return _mcp_call("smartsheet_sheets_list", {"docid": docid})
+
+
+def mcp_smartsheet_get_fields(docid, sheet_id):
+    """查询智能表格字段列表（MCP 工具名 smartsheet_fields_list）"""
+    return _mcp_call("smartsheet_fields_list", {"docid": docid, "sheet_id": sheet_id, "type": "fields"})
+
+
+def mcp_smartsheet_add_fields(docid, sheet_id, fields):
+    """添加智能表格字段（MCP 工具名 smartsheet_fields_add）
+
+    fields: [{"field_title": "...", "field_type": "text"}, ...]
+    """
+    return _mcp_call("smartsheet_fields_add", {
+        "docid": docid, "sheet_id": sheet_id, "type": "add", "fields": fields
+    })
+
+
+def mcp_smartsheet_add_records(docid, sheet_id, records):
+    """添加智能表格记录（MCP 工具名 smartsheet_records_add）
+
+    records: [{"values": {"字段标题": 值, ...}}, ...]
+    """
+    return _mcp_call("smartsheet_records_add", {
+        "docid": docid, "sheet_id": sheet_id, "type": "add", "records": records
+    })
+
+
+def create_smart_sheet_with_headers(doc_name, headers):
+    """一键创建带表头的智能表格（实测最优方案：doc_create 一步建表）
+
+    实测结论（2026-08-17）：
+    - MCP 工具名是 doc_create（不是官方文档里的 create_doc）
+    - doc_type 传字符串 "smartsheet"（不是整数 10）
+    - 必须传 sheet_title，否则报错"创建智能表格时 sheet_title 为必填项"
+    - 直接传 fields 数组即可一步建出指定表头，无需"创建默认表→删默认字段→重命名"
+      的弯路（默认建的 5 个字段：文本/数字/日期/单选/人员，会带示例数据，且
+      smartsheet_fields_update 无法改标题——实测返回 640027 无效）
+
+    Args:
+        doc_name: 智能表格名称
+        headers: 表头列表，如 ["时间", "处理人", "客户号码"]
+
+    Returns:
+        dict: {"success": bool, "docid": str, "sheet_id": str, "url": str, "error": str}
+    """
+    if not headers:
+        return {"success": False, "docid": "", "sheet_id": "", "url": "", "error": "表头不能为空"}
+
+    fields = [
+        {"field_title": h, "field_type": "number" if h in ("金额", "数量", "出账", "费用", "价格") else "text"}
+        for h in headers
+    ]
+    result = mcp_create_doc(doc_name, doc_type="smartsheet", fields=fields, sheet_title="台账")
+    if not result.get("success"):
+        return {"success": False, "docid": "", "sheet_id": "", "url": "",
+                "error": f"创建智能表格失败: {result.get('error')}"}
+    docid = result["data"].get("docid", "")
+    url = result["data"].get("url", "")
+    if not docid:
+        return {"success": False, "docid": "", "sheet_id": "", "url": "",
+                "error": f"未获得docid: {result['data']}"}
+    logger.info(f"智能表格已创建: docid={docid}, url={url}")
+
+    # 查默认子表（第一个 smartsheet 类型子表）
+    time.sleep(1)
+    sheet_result = mcp_smartsheet_get_sheets(docid)
+    if not sheet_result.get("success"):
+        return {"success": False, "docid": docid, "sheet_id": "", "url": url,
+                "error": f"获取子表失败: {sheet_result.get('error')}"}
+    sheets = sheet_result["data"].get("sheets", [])
+    smartsheets = [s for s in sheets if s.get("type") == "smartsheet"]
+    if not smartsheets:
+        return {"success": False, "docid": docid, "sheet_id": "", "url": url,
+                "error": "智能表格无默认子表"}
+    sheet_id = smartsheets[0].get("sheet_id", "")
+    logger.info(f"默认子表: sheet_id={sheet_id}")
+
+    logger.info(f"智能表格表头初始化完成: {headers}")
+    return {"success": True, "docid": docid, "sheet_id": sheet_id, "url": url, "error": ""}
+
+
+def add_smart_sheet_records(docid, sheet_id, records):
+    """向智能表格添加记录
+
+    Args:
+        docid: 智能表格 docid
+        sheet_id: 子表 sheet_id
+        records: [{"字段标题": 值, ...}, ...]
+            文本字段值格式: [{"type": "text", "text": "内容"}]（数组，不能传单个对象）
+            数字: 直接传数字；复选框: true/false；单选/多选: [{"text": "选项"}]
+            日期时间: "YYYY-MM-DD HH:MM:SS"
+            函数内部会自动包成 MCP 需要的 {"values": {...}} 结构
+
+    Returns:
+        dict: {"success": bool, "data": dict, "error": str}
+    """
+    # MCP 需要 records 元素为 {"values": {"字段标题": 值}}，这里做格式归一
+    wrapped = []
+    for rec in records:
+        if isinstance(rec, dict) and "values" in rec:
+            wrapped.append(rec)
+        else:
+            wrapped.append({"values": rec})
+    return mcp_smartsheet_add_records(docid, sheet_id, wrapped)
+
+
+# ============================================================
 # 测试入口
 # ============================================================
 
@@ -489,6 +703,7 @@ if __name__ == '__main__':
         print("  测试表格: python wecom_api.py sheet")
         print("  测试待办: python wecom_api.py todo")
         print("  测试文档: python wecom_api.py doc")
+        print("  测试智能表格: python wecom_api.py smartsheet")
         sys.exit(1)
 
     logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')

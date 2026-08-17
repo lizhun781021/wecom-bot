@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '992d260b-fa4c-4e73-80a4-5b5afae8704b'
-  PropagateID: '992d260b-fa4c-4e73-80a4-5b5afae8704b'
-  ReservedCode1: '9056ebcb-eb7c-49a0-bd82-a76bafa438f4'
-  ReservedCode2: '9056ebcb-eb7c-49a0-bd82-a76bafa438f4'
+  ProduceID: '6c5ad3c4-54c4-43ec-8d3a-311c32b803e8'
+  PropagateID: '6c5ad3c4-54c4-43ec-8d3a-311c32b803e8'
+  ReservedCode1: '8cffd6a0-2b12-4a3c-8217-1e51bf464e75'
+  ReservedCode2: '8cffd6a0-2b12-4a3c-8217-1e51bf464e75'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -99,6 +99,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.7.0 | 2026-08-17 | 企微侧4类事件处理+Markdown回复+5种模板卡片+文档MCP能力（智能表格一键建表写记录），内置测试指令 /md /card /btn /vote /multi /push /fd /table |
 | v1.6.0 | 2026-08-17 | QQ 机器人 6 大新能力：Markdown/视频/语音(TTS)/主动@/关键词指令/事件回调，面板新增视频与语音格式 |
 | v1.5.10 | 2026-08-17 | 面板→QQ群下发打通（被动回复通道）：自动复用最近5分钟内@的msg_id发文本/图片/文件，重启持久化 |
 | v1.5.9 | 2026-08-16 | QQ文件支持>5MB分片上传（官方upload_prepare→PUT→part_finish→files，上限200MB） |
@@ -127,7 +128,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 | `VERSION` | 当前版本号 |
 | `CHANGELOG.md` | 更新日志 |
 | `server.py` | 机器人主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传、配餐后处理） |
-| `wecom_api.py` | 企微文档/表格/待办 API 封装（通过 wecom-cli 调用） |
+| `wecom_api.py` | 企微文档/表格/待办 API 封装（v1.7.0 新增文档 MCP 能力：`doc_create` 一键建智能表格带表头、`smartsheet_records_add` 写记录） |
 | `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送，图片超2MB自动压缩） |
 | `dashboard.py` | Web管理面板（端口8505，企微+QQ双通道状态监控+主动推送+消息记录+实时日志，Tab菜单，v1.5.0 支持 QQ） |
 | `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送 + 内部推送端点18506，v1.4.0 新增；v1.5.3 增加 openid→昵称显示映射；v1.6.0 增加 Markdown/视频/语音/TTS/@/指令/事件回调） |

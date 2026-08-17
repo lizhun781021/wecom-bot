@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '06a8596d-e4fa-4ea0-a9f7-50548802a5fe'
-  PropagateID: '06a8596d-e4fa-4ea0-a9f7-50548802a5fe'
-  ReservedCode1: 'fc4cae74-70a1-4b66-a7ea-40d2229b0161'
-  ReservedCode2: 'fc4cae74-70a1-4b66-a7ea-40d2229b0161'
+  ProduceID: '8c4cb4ee-7842-4acf-82f8-84216e19745a'
+  PropagateID: '8c4cb4ee-7842-4acf-82f8-84216e19745a'
+  ReservedCode1: 'e37bba91-7c35-4c03-9bae-4afa6bbae817'
+  ReservedCode2: 'e37bba91-7c35-4c03-9bae-4afa6bbae817'
 ---
 
 # 更新日志
@@ -15,6 +15,27 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.7.0 (2026-08-17)
+
+**企微文档能力接入 + 4 类事件处理 + Markdown/模板卡片全套**。
+
+### 新增功能
+- **企微文档 MCP 能力**（wecom_api.py）：
+  - `doc_create` 一步创建智能表格（传 `fields` + `sheet_title`），自动生成指定表头，无需"建默认表→改字段"弯路
+  - `smartsheet_sheets_list` / `fields_list` / `fields_add` / `records_add` 全链路封装
+  - `create_smart_sheet_with_headers()` 一键建"带表头智能表格"，`add_smart_sheet_records()` 写记录（自动做 `values` 格式归一）
+  - `_mcp_call` 修正：补 `Accept: application/json, text/event-stream` 请求头（否则 HTTP 406）；工具名对齐实际暴露名（实测确认 62 个工具，`create_doc`→`doc_create` 等）
+- **4 类事件处理**（server.py）：`enter_chat`（欢迎语）、`template_card_event`（5 秒内更新卡片）、`feedback_event`（点赞/点踩解析入库）、`disconnected_event`
+- **Markdown 回复** `reply_markdown()` + 流式消息 `feedback_id` 参数（消息下方可点赞/点踩）
+- **模板卡片 5 种类型**：文本通知 / 新闻通知 / 按钮交互 / 投票 / 多项选择，`reply_template_card` / `reply_welcome` / `update_template_card` / `send_push_message` 全套发送
+- **内置测试指令**：`/md` `/card` `/btn` `/vote` `/multi` `/push` `/fd` `/table`
+
+### 实测记录
+- 企微单聊实测：Markdown / 文本卡片 / 按钮卡片 / 投票卡片 / 多项选择 / 主动推送 / 反馈事件（点赞触发 `type=1`）/ 智能表格建表+写记录全部通过
+- 智能表格 MCP 实测：`doc_create` 一步建表（含表头）→ `records_add` 写入 → `records_list` 读回，全链路成功
 
 ---
 
