@@ -227,10 +227,11 @@ def _short_openid(openid: str, max_len: int = 10) -> str:
     return f"{openid[:max_len]}...{openid[-max_len:]}"
 
 
-def _record_message(msg_type: str, user: str, preview: str, status: str = "处理中", scene: str = ""):
+def _record_message(msg_type: str, user: str, preview: str, status: str = "处理中", scene: str = "", msg_id: str = ""):
     """记录一条 QQ 消息（内存+落盘），供 dashboard（独立进程）合并展示
 
     scene: 来源场景，'group'=群聊 / 'single'=私聊 / ''=未知（面板显示'-'）
+    msg_id: 消息 id，用于回复完成后回写状态（按 msg_id 匹配更新为「已回复」）
     """
     global QQ_MESSAGES
     rec = {
@@ -242,6 +243,7 @@ def _record_message(msg_type: str, user: str, preview: str, status: str = "处�
         "preview": (preview or "")[:80],
         "status": status,
         "scene": scene if scene in ("group", "single") else "",
+        "msg_id": msg_id or "",
     }
     with QQ_MESSAGES_LOCK:
         QQ_MESSAGES.insert(0, rec)
@@ -266,6 +268,30 @@ def _record_message(msg_type: str, user: str, preview: str, status: str = "处�
                 json.dump(QQ_MESSAGES, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"[QQ] 消息落盘失败: {e}")
+
+
+def _mark_message_status(msg_id: str, status: str):
+    """按 msg_id 更新已落盘消息的状态（如「处理中」→「已回复」/「失败」）。
+
+    面板展示依赖 qq_messages.json，回复完成后必须回写，否则状态永远停在「处理中」。
+    匹配失败（如 msg_id 为空）时静默跳过，不影响正常回复流程。
+    """
+    if not msg_id:
+        return
+    global QQ_MESSAGES
+    updated = False
+    with QQ_MESSAGES_LOCK:
+        for rec in QQ_MESSAGES:
+            if rec.get("msg_id") == msg_id and rec.get("status") != status:
+                rec["status"] = status
+                updated = True
+                break
+        if updated:
+            try:
+                with open(QQ_MESSAGES_FILE, "w", encoding="utf-8") as f:
+                    json.dump(QQ_MESSAGES, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.error(f"[QQ] 消息状态落盘失败: {e}")
 
 
 def qq_push_to_group(group_openid: str, content: str):
@@ -982,6 +1008,7 @@ def _rich_text_at(text: str, target_openid: str = ""):
 
 def _handle_qq_message(message, from_user, text_content, file_paths, is_group: bool):
     """QQ 消息统一入口：走 server.process_and_reply 的同款逻辑（但回复走 QQ 官方 API）"""
+    msg_id = getattr(message, "id", None) or ""
     try:
         # 显示名：优先 QQ_USER_MAP 手动映射，映射不到保留 openid
         display = _display_name(from_user, max_len=20)
@@ -996,6 +1023,7 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
         if cmd_match:
             cmd, args = cmd_match
             _handle_command(message, cmd, args)
+            _mark_message_status(msg_id, "已回复")
             return
 
         # 构建 prompt（复用 server.build_prompt）
@@ -1011,6 +1039,7 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
 
         if not result:
             _reply_text(message, "抱歉，处理超时或出错了。请稍后重试。")
+            _mark_message_status(msg_id, "已回复")
             return
 
         # 分离文本与文件
@@ -1047,10 +1076,14 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
                     logger.warning(f"[QQ] 配餐台账写入异常: {e}")
         except Exception as e:
             logger.error(f"[QQ] 配餐后处理异常: {e}")
+
+        # 正常回复完成 → 状态回写为「已回复」（面板消息记录不再停留「处理中」）
+        _mark_message_status(msg_id, "已回复")
     except Exception as e:
         logger.error(f"[QQ] 处理消息异常: {e}")
         traceback.print_exc()
         _reply_text_and_files(message, f"处理出错: {e}", [])
+        _mark_message_status(msg_id, "失败")
 
 
 def _file_type_by_ext(filename: str) -> int:
@@ -1418,7 +1451,8 @@ class QQOfficialClient(botpy.Client):
             _record_message("text" if content else "image",
                             from_user,
                             content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"),
-                            scene="group")
+                            scene="group",
+                            msg_id=getattr(message, "id", None) or "")
 
             # 异步处理（不阻塞事件循环）
             loop = asyncio.get_event_loop()
@@ -1459,7 +1493,8 @@ class QQOfficialClient(botpy.Client):
             _record_message("text" if content else "image",
                             from_user,
                             content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"),
-                            scene="single")
+                            scene="single",
+                            msg_id=getattr(message, "id", None) or "")
 
             loop = asyncio.get_event_loop()
             loop.run_in_executor(None, lambda: _handle_qq_message(

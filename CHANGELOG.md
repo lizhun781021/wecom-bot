@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '276cc2be-d0b8-4561-a0e2-86f11e74fd38'
-  PropagateID: '276cc2be-d0b8-4561-a0e2-86f11e74fd38'
-  ReservedCode1: 'fa3851ea-db55-47ae-9cb0-08c93405633f'
-  ReservedCode2: 'fa3851ea-db55-47ae-9cb0-08c93405633f'
+  ProduceID: '06a8596d-e4fa-4ea0-a9f7-50548802a5fe'
+  PropagateID: '06a8596d-e4fa-4ea0-a9f7-50548802a5fe'
+  ReservedCode1: 'fc4cae74-70a1-4b66-a7ea-40d2229b0161'
+  ReservedCode2: 'fc4cae74-70a1-4b66-a7ea-40d2229b0161'
 ---
 
 # 更新日志
@@ -68,6 +68,26 @@ AIGC:
 ### 备注
 - 被动回复有效期 5 分钟（官方限制），超过需群内重新 @ 机器人
 - 群聊文本被动回复也走 `msg_id` 通道（`msg_type=0` + `msg_seq` 递增），不再调用已被官方下线的主动推送接口
+
+---
+
+## v1.6.2 (2026-08-17)
+
+**修复：面板消息记录状态一直停留「处理中」**。
+
+QQ 消息记录落盘后，回复流程中缺少状态回写机制，导致面板里所有消息永远显示「处理中」。本次修复：
+
+- `_record_message` 新增 `msg_id` 字段（消息唯一 id，用于回写定位）
+- 新增 `_mark_message_status(msg_id, status)`：按 msg_id 匹配更新落盘记录状态（`处理中` → `已回复`/`失败`）
+- 群聊/单聊消息回调写入记录时携带 `msg_id`
+- `_handle_qq_message` 各回复出口统一回写状态：
+  - 关键词指令回复完成 → `已回复`
+  - AI 回复成功（含超时兜底回复）→ `已回复`
+  - 处理异常 → `失败`
+- 事件类记录（`status=事件`）不参与状态流转，保持原样
+
+### 备注
+- 历史记录（本次修复前写入、无 `msg_id`）无法回写，仍显示「处理中」，不影响新消息
 
 ---
 
