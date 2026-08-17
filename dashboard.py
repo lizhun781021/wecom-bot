@@ -337,8 +337,15 @@ tr:hover { background: #162232; }
           <option value="text">纯文本</option>
           <option value="markdown">Markdown</option>
           <option value="image">图片</option>
+          <option value="video">视频</option>
+          <option value="voice">语音 (TTS)</option>
           <option value="file">文件</option>
         </select>
+      </div>
+      <div id="push-at-wrap" style="margin-bottom: 12px; display:none;">
+        <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">@用户 (群聊富文本)</label>
+        <input id="push-at" type="text" placeholder="目标成员 openid（可选，留空则普通文本）" style="background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;width:280px;">
+        <div style="font-size:12px;color:#8a9aaa;margin-top:6px;">在文本中写 <code>@用户</code> 占位，将替换为 QQ 富文本 @ 语法（仅群聊有效）</div>
       </div>
       <div id="push-content-wrap" style="margin-bottom: 12px;">
         <textarea id="push-content" placeholder="输入消息内容..." style="width:100%;min-height:120px;background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:8px;padding:12px;font-size:14px;font-family:inherit;resize:vertical;"></textarea>
@@ -352,6 +359,15 @@ tr:hover { background: #162232; }
         <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">选择文件</label>
         <input id="push-file" type="file" style="background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;max-width:70%;">
         <div id="push-file-preview" style="margin-top:10px;font-size:12px;color:#8a9aaa;"></div>
+      </div>
+      <div id="push-video-wrap" style="margin-bottom: 12px; display:none;">
+        <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">选择视频 (mp4 ≤30MB)</label>
+        <input id="push-video" type="file" accept="video/mp4" style="background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;max-width:70%;">
+        <div id="push-video-preview" style="margin-top:10px;font-size:12px;color:#8a9aaa;"></div>
+      </div>
+      <div id="push-voice-wrap" style="margin-bottom: 12px; display:none;">
+        <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">语音文本（本地TTS合成）</label>
+        <textarea id="push-voice-text" placeholder="输入要合成的语音内容..." style="width:100%;min-height:60px;background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:8px;padding:12px;font-size:14px;font-family:inherit;resize:vertical;"></textarea>
       </div>
       <button class="refresh-btn" style="padding:8px 24px;font-size:14px;" onclick="sendPush()">发送</button>
       <div id="push-result" style="margin-top:10px;font-size:13px;"></div>
@@ -514,6 +530,17 @@ async function sendPush() {
         resultEl.innerHTML = '<span style="color:#ef4444;">请先选择文件</span>';
         return;
       }
+    } else if (format === 'video') {
+      const videoInput = document.getElementById('push-video');
+      if (!videoInput.files || videoInput.files.length === 0) {
+        resultEl.innerHTML = '<span style="color:#ef4444;">请先选择视频</span>';
+        return;
+      }
+    } else if (format === 'voice') {
+      if (!document.getElementById('push-voice-text').value.trim()) {
+        resultEl.innerHTML = '<span style="color:#ef4444;">请输入要合成的语音内容</span>';
+        return;
+      }
     } else if (!content.trim()) {
       resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>';
       return;
@@ -549,7 +576,20 @@ async function sendPush() {
       }
       body.fileData = await readFileAsBase64(file);
       body.fileName = file.name;
+    } else if (format === 'video') {
+      const vf = document.getElementById('push-video').files[0];
+      if (vf.size > 200 * 1024 * 1024) {
+        statusEl.textContent = '失败';
+        resultEl.innerHTML = '<span style="color:#ef4444;">视频超过 200MB，超出 QQ 官方硬限制</span>';
+        return;
+      }
+      body.videoData = await readFileAsBase64(vf);
+      body.videoName = vf.name;
+    } else if (format === 'voice') {
+      body.voiceText = document.getElementById('push-voice-text').value;
     }
+    const atVal = document.getElementById('push-at');
+    if (atVal && atVal.value.trim()) body.at = atVal.value.trim();
     const r = await fetch('/api/push', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
     const d = await r.json();
     if (d.success) {
@@ -601,13 +641,26 @@ document.addEventListener('DOMContentLoaded', function() {
   const fileWrap = document.getElementById('push-file-wrap');
   const fileInput = document.getElementById('push-file');
   const filePreview = document.getElementById('push-file-preview');
+  const videoWrap = document.getElementById('push-video-wrap');
+  const videoInput = document.getElementById('push-video');
+  const videoPreview = document.getElementById('push-video-preview');
+  const voiceWrap = document.getElementById('push-voice-wrap');
+  const voiceText = document.getElementById('push-voice-text');
+  const atWrap = document.getElementById('push-at-wrap');
   function onFormatChange() {
     const f = formatSel.value;
     const isImage = f === 'image';
     const isFile = f === 'file';
-    contentWrap.style.display = (isImage || isFile) ? 'none' : '';
+    const isVideo = f === 'video';
+    const isVoice = f === 'voice';
+    contentWrap.style.display = (isImage || isFile || isVideo || isVoice) ? 'none' : '';
     imageWrap.style.display = isImage ? '' : 'none';
     fileWrap.style.display = isFile ? '' : 'none';
+    videoWrap.style.display = isVideo ? '' : 'none';
+    voiceWrap.style.display = isVoice ? '' : 'none';
+    // @ 输入框：文本/Markdown 且目标为 QQ 群时显示
+    const t = document.getElementById('push-target').value;
+    atWrap.style.display = (t === 'qq_group' && (f === 'text' || f === 'markdown')) ? '' : 'none';
   }
   formatSel.addEventListener('change', onFormatChange);
   onFormatChange();
@@ -632,6 +685,19 @@ document.addEventListener('DOMContentLoaded', function() {
       filePreview.textContent = '';
     }
   });
+  videoInput.addEventListener('change', function() {
+    if (this.files && this.files[0]) {
+      const f = this.files[0];
+      const sizeMB = (f.size / 1024 / 1024).toFixed(2);
+      videoPreview.textContent = f.name + ' (' + sizeMB + ' MB)' + (f.size > 30*1024*1024 ? ' - 超过30MB将降级为文件' : '');
+      videoPreview.style.color = f.size > 200*1024*1024 ? '#ef4444' : '#8a9aaa';
+    } else {
+      videoPreview.textContent = '';
+    }
+  });
+  // 目标切换时也联动 @ 输入显示
+  const targetSel2 = document.getElementById('push-target');
+  targetSel2.addEventListener('change', function() { onFormatChange(); });
 });
 async function loadQQSessions() {
   try {
@@ -727,6 +793,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             image_name = req.get('imageName', 'image.png')
             file_data = req.get('fileData', '')
             file_name = req.get('fileName', '')
+            video_data = req.get('videoData', '')
+            video_name = req.get('videoName', '')
+            voice_text = req.get('voiceText', '')
+            at_user = req.get('at', '')
 
             if fmt == 'image':
                 if not image_data:
@@ -735,6 +805,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif fmt == 'file':
                 if not file_data:
                     self._serve_json({"success": False, "error": "文件数据不能为空"})
+                    return
+            elif fmt == 'video':
+                if not video_data:
+                    self._serve_json({"success": False, "error": "视频数据不能为空"})
+                    return
+            elif fmt == 'voice':
+                if not voice_text.strip():
+                    self._serve_json({"success": False, "error": "语音文本不能为空"})
                     return
             elif not content.strip():
                 self._serve_json({"success": False, "error": "消息内容不能为空"})
@@ -754,16 +832,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if fmt == 'file' and not file_data:
                     self._serve_json({"success": False, "error": "QQ文件推送需要文件数据"})
                     return
-                ok, err = self._forward_qq_push(target, userid, content, fmt, image_data, file_data, file_name)
+                ok, err = self._forward_qq_push(
+                    target, userid, content, fmt,
+                    image_data, file_data, file_name,
+                    video_data, video_name, voice_text, at_user,
+                )
                 if ok:
                     self._serve_json({"success": True, "detail": f"QQ推送成功 ({target}/{fmt})"})
                 else:
                     self._serve_json({"success": False, "error": f"QQ推送失败: {err}"})
                 return
 
-            # 企微通道不支持文件推送
-            if fmt == 'file':
-                self._serve_json({"success": False, "error": "文件推送仅支持 QQ 官方机器人"})
+            # 企微通道不支持文件/视频/语音推送
+            if fmt in ('file', 'video', 'voice'):
+                self._serve_json({"success": False, "error": "文件/视频/语音推送仅支持 QQ 官方机器人"})
                 return
 
             result = None
@@ -835,15 +917,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-    def _forward_qq_push(self, target, openid, content, fmt='text', image_data='', file_data='', file_name=''):
-        """通过 QQ 适配器内部端点转发推送（跨进程）
-        fmt: text / image / file；image 时附带 base64 图片数据，file 时附带 base64 文件数据+文件名"""
+    def _forward_qq_push(self, target, openid, content, fmt='text', image_data='', file_data='', file_name='', video_data='', video_name='', voice_text='', at_user=''):
+        """通过 QQ 适配器内部接口转发推送（跨进程）
+        fmt: text / markdown / image / file / video / voice；
+        image/video/file 时附带 base64 数据+文件名，voice 时附带 voice_text（本地 TTS），markdown 映射 msg_type=2"""
         import urllib.request
         try:
             payload = {
                 "target": "group" if target == 'qq_group' else "user",
                 "openid": openid,
             }
+            if at_user.strip():
+                # 富文本 @ 目标 openid（仅群聊有效，由适配器替换 @用户 占位）
+                payload["at"] = at_user
             if fmt == 'image':
                 # 图片推送：透传 base64 + 可选 caption
                 payload["image"] = image_data
@@ -855,6 +941,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload["filename"] = file_name or "文件"
                 if content.strip():
                     payload["caption"] = content
+            elif fmt == 'video':
+                # 视频推送：透传 base64 + 文件名（适配器按扩展名推断 file_type=2）
+                payload["file"] = video_data
+                payload["filename"] = video_name or "video.mp4"
+                if content.strip():
+                    payload["caption"] = content
+            elif fmt == 'voice':
+                # 语音推送：适配器本地 TTS 合成 mp3 后发送
+                payload["voice_text"] = voice_text
+            elif fmt == 'markdown':
+                payload["msg_type"] = 2
+                payload["content"] = content
             else:
                 payload["content"] = content
             req = urllib.request.Request(

@@ -94,6 +94,17 @@ QQ_LAST_GROUP_MSG = {}
 QQ_LAST_GROUP_MSG_LOCK = threading.Lock()
 QQ_PASSIVE_TTL = 5 * 60  # 被动回复有效期（官方 5 分钟）
 
+# ========== 富文本 / 指令 / 富媒体辅助 ==========
+QQ_MD_MSG_PREFIX = "## 智能助手\n\n"  # Markdown 消息前缀（AI 回复自动排版）
+QQ_CMD_HELP = (
+    "我是星小辰，可用指令：\n"
+    "/配餐 帮我生成配餐方案\n"
+    "/质检 对录音进行质检评分\n"
+    "/日报 生成今日工作日报\n"
+    "/话术 获取五步法营销话术\n"
+    "/帮助 查看指令说明"
+)
+
 # 状态落地文件（dashboard 等跨进程读取用）
 QQ_STATUS_FILE = os.path.join(PROJECT_ROOT, "qq_status.json")
 QQ_MESSAGES_FILE = os.path.join(PROJECT_ROOT, "qq_messages.json")
@@ -290,6 +301,29 @@ def qq_push_to_user(openid: str, content: str):
         return False
 
 
+def _qq_push_markdown(kind: str, openid: str, md_content: str) -> tuple:
+    """主动推送 Markdown 消息（msg_type=2）。返回 (success, detail)"""
+    if not openid or not md_content:
+        return False, "缺少 openid 或 Markdown 内容"
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        return False, "QQ 客户端未运行"
+    try:
+        from botpy.http import Route
+        if kind == "group":
+            route = Route("POST", "/v2/groups/{group_openid}/messages", group_openid=openid)
+        else:
+            route = Route("POST", "/v2/users/{openid}/messages", openid=openid)
+        payload = {"msg_type": 2, "markdown": {"content": md_content[:3000]}}
+        fut = asyncio.run_coroutine_threadsafe(client.api._http.request(route, json=payload), _QQ_LOOP)
+        fut.result(timeout=20)
+        logger.info(f"[QQ] Markdown 推送成功: {kind}/{openid}")
+        return True, "Markdown 推送成功"
+    except Exception as e:
+        logger.error(f"[QQ] Markdown 推送失败: {kind}/{openid}, {e}")
+        return False, str(e)
+
+
 def qq_push_reply(target: str, content: str):
     """双向桥：TeleAgent 侧向 QQ 会话主动回消息（target 形如 group:xxx 或 user:xxx）"""
     if not target or not content:
@@ -368,7 +402,7 @@ def qq_push_image(kind: str, openid: str, image_b64: str, caption: str = ""):
         return False, str(e)
 
 
-def _qq_chunked_upload(kind: str, openid: str, raw: bytes, filename: str = ""):
+def _qq_chunked_upload(kind: str, openid: str, raw: bytes, filename: str = "", file_type: int = 4):
     """QQ 官方分片上传（>5MB 大文件）。
 
     官方协议（api-v2 / 富媒体分片上传，推荐）：
@@ -378,6 +412,7 @@ def _qq_chunked_upload(kind: str, openid: str, raw: bytes, filename: str = ""):
       4) 全部分片完成后 POST /v2/users|groups/{openid}/files 携带 upload_id 合并 → file_info
 
     支持任意格式文件（file_type=4），软/硬限制均为 200MB。
+    file_type: 1=图片 2=视频 3=语音 4=文件
     返回 (success, file_info_or_detail)
     """
     import base64 as _b64
@@ -406,7 +441,7 @@ def _qq_chunked_upload(kind: str, openid: str, raw: bytes, filename: str = ""):
     try:
         # 1) 预上传
         prep_payload = {
-            "file_type": 4,
+            "file_type": file_type,
             "file_size": str(size),
             "file_name": fname,
             "md5": md5,
@@ -465,7 +500,7 @@ def _qq_chunked_upload(kind: str, openid: str, raw: bytes, filename: str = ""):
 
         # 4) 合并：携带 upload_id 调上传接口 → file_info
         merge_payload = {
-            "file_type": 4,
+            "file_type": file_type,
             "srv_send_msg": False,
             "file_name": fname,
             "upload_id": upload_id,
@@ -488,6 +523,7 @@ def qq_push_file(kind: str, openid: str, file_b64: str, filename: str = "", capt
     """向 QQ 群/单聊发送文件（base64 → 上传 media → 富媒体消息）。
 
     官方 v2 接口：POST /v2/groups|users/{openid}/files 支持 file_type=4(文件)。
+    按扩展名自动识别富媒体类型：图片(1)/视频(2)/语音(3)/文件(4)。
       - ≤5MB：file_data(base64) 直传（botpy SDK 注释"暂不开放"已过时，实测可用）
       - >5MB：官方分片上传（upload_prepare → PUT分片 → part_finish → 合并），上限 200MB
     返回 (success, detail)
@@ -511,17 +547,23 @@ def qq_push_file(kind: str, openid: str, file_b64: str, filename: str = "", capt
     if raw_len > 200 * 1024 * 1024:
         return False, "文件超过 200MB，超出 QQ 官方硬限制"
 
+    ftype = _file_type_by_ext(filename)
+    # 超过软限制降级为文件
+    soft_limits = {1: 20 * 1024 * 1024, 2: 30 * 1024 * 1024, 3: 20 * 1024 * 1024, 4: 200 * 1024 * 1024}
+    if raw_len > soft_limits.get(ftype, 200 * 1024 * 1024):
+        ftype = 4
+
     try:
         from botpy.http import Route
         if raw_len > 5 * 1024 * 1024:
             # 大文件 → 分片上传
-            ok, media = _qq_chunked_upload(kind, openid, raw, filename)
+            ok, media = _qq_chunked_upload(kind, openid, raw, filename, file_type=ftype)
             if not ok:
                 return False, media
         else:
             # 小文件 → base64 直传
             payload = {
-                "file_type": 4,  # 4=文件
+                "file_type": ftype,  # 自动识别媒体类型
                 "file_data": file_b64,
                 "srv_send_msg": False,
             }
@@ -669,6 +711,188 @@ def _reply_text(message, content: str, max_len: int = 3000):
         return None
 
 
+def _reply_markdown(message, md_content: str, max_len: int = 3000):
+    """统一回复 Markdown 消息（msg_type=2）。
+
+    2026/04/23 起单聊+群聊全量开放自定义 Markdown，无需申请模板。
+    支持：标题/加粗/下划线/斜体/删除线/链接/图片(公网URL)/有序无序列表/块引用/分割线/多行。
+    群聊走被动回复（带 msg_id + msg_seq），单聊直接发。
+    直接走 client.api._http.request（不依赖 message.reply()）。
+    """
+    if not md_content:
+        return None
+    if len(md_content) > max_len:
+        md_content = md_content[:max_len] + "\n\n(回复过长已截断)"
+    # 标题尽量从一级降到二级（避免刷屏），正文保留
+    if md_content.startswith("# "):
+        md_content = "## " + md_content[2:]
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        logger.warning("[QQ] 回复Markdown失败：QQ 客户端未运行")
+        return None
+    try:
+        from botpy.http import Route
+        if isinstance(message, GroupMessage):
+            seq = _next_msg_seq(message)
+            route = Route(
+                "POST", "/v2/groups/{group_openid}/messages",
+                group_openid=getattr(message, "group_openid", None),
+            )
+            payload = {
+                "msg_type": 2,
+                "markdown": {"content": md_content},
+                "msg_id": getattr(message, "id", None),
+                "msg_seq": seq,
+            }
+        elif isinstance(message, C2CMessage):
+            route = Route(
+                "POST", "/v2/users/{openid}/messages",
+                openid=getattr(getattr(message, "author", None), "user_openid", None),
+            )
+            payload = {"msg_type": 2, "markdown": {"content": md_content}, "msg_id": getattr(message, "id", None)}
+        else:
+            return None
+        fut = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(route, json=payload), _QQ_LOOP
+        )
+        return fut
+    except Exception as e:
+        logger.error(f"QQ Markdown回复失败: {e}")
+        return None
+
+
+def _reply_media_passive(message, file_type: int, raw: bytes, filename: str = ""):
+    """被动回复富媒体消息（图片/视频/语音/文件）。
+
+    file_type: 1=图片, 2=视频(mp4), 3=语音(silk/mp3/wav/ogg), 4=文件
+    流程：base64 → 上传 files（≤软限制直传 / >软限制分片）拿 file_info →
+          post messages(msg_type=7, media=file_info, msg_id, msg_seq)
+    返回 (success, detail)
+    """
+    if not raw:
+        return False, "缺少文件数据"
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        return False, "QQ 客户端未运行"
+
+    import base64 as _b64
+    from botpy.http import Route
+
+    try:
+        file_b64 = _b64.b64encode(raw).decode()
+        fname = filename or ("media" + {1: ".jpg", 2: ".mp4", 3: ".silk", 4: ".bin"}.get(file_type, ".bin"))
+        size = len(raw)
+
+        is_group = isinstance(message, GroupMessage)
+        openid = getattr(message, "group_openid", None) or getattr(getattr(message, "author", None), "user_openid", None)
+        if not openid:
+            return False, "缺少 openid"
+
+        # 软限制（超过则降级为文件类型上传，官方自动处理）
+        soft_limits = {1: 20 * 1024 * 1024, 2: 30 * 1024 * 1024, 3: 20 * 1024 * 1024, 4: 200 * 1024 * 1024}
+        if size > soft_limits.get(file_type, 200 * 1024 * 1024):
+            file_type = 4  # 降级为文件
+        if size > 200 * 1024 * 1024:
+            return False, "文件超过 200MB，超出 QQ 官方硬限制"
+
+        # 1) 上传拿 file_info（≤5MB 直传 / >5MB 分片）
+        if size > 5 * 1024 * 1024:
+            ok, media = _qq_chunked_upload("group" if is_group else "user", openid, raw, fname, file_type=file_type)
+            if not ok:
+                return False, f"分片上传失败: {media}"
+        else:
+            upload_payload = {
+                "file_type": file_type,
+                "file_data": file_b64,
+                "srv_send_msg": False,
+            }
+            if fname:
+                upload_payload["file_name"] = fname
+            if is_group:
+                up_route = Route("POST", "/v2/groups/{group_openid}/files", group_openid=openid)
+            else:
+                up_route = Route("POST", "/v2/users/{openid}/files", openid=openid)
+            fut = asyncio.run_coroutine_threadsafe(
+                client.api._http.request(up_route, json=upload_payload), _QQ_LOOP
+            )
+            media = fut.result(timeout=30)
+            if not media or not media.get("file_info"):
+                return False, f"上传失败: {media}"
+
+        # 2) 被动回复富媒体消息
+        seq = _next_msg_seq(message)
+        msg_route = Route(
+            "POST",
+            "/v2/groups/{group_openid}/messages" if is_group else "/v2/users/{openid}/messages",
+            **({"group_openid": openid} if is_group else {"openid": openid}),
+        )
+        msg_payload = {"msg_type": 7, "media": media, "msg_id": getattr(message, "id", None), "msg_seq": seq}
+        fut2 = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(msg_route, json=msg_payload), _QQ_LOOP
+        )
+        fut2.result(timeout=30)
+        logger.info(f"[QQ] 被动回复富媒体成功: {fname} (type={file_type}, {'群聊' if is_group else '私聊'})")
+        return True, "发送成功"
+    except Exception as e:
+        err_str = str(e)
+        if "40034105" in err_str or "主动消息" in err_str or "过期" in err_str or "无效" in err_str:
+            logger.warning(f"[QQ] 被动回复富媒体失败（可能已超5分钟有效期）: {e}")
+        else:
+            logger.error(f"[QQ] 被动回复富媒体异常: {e}")
+        return False, str(e)
+
+
+def _tts_say(text: str, save_dir: str = None) -> str | None:
+    """本地 TTS 合成语音（macOS say + ffmpeg 转 mp3）。
+
+    优先用中文音色（Tingting/婷婷），say 生成 aiff → ffmpeg 转 mp3（QQ 语音支持 mp3/wav/ogg/silk）。
+    返回本地 mp3 路径；失败返回 None。
+    """
+    if not text:
+        return None
+    import subprocess
+    import tempfile
+
+    save_dir = save_dir or config.VOICE_SAVE_DIR
+    os.makedirs(save_dir, exist_ok=True)
+    aiff_path = os.path.join(tempfile.gettempdir(), f"qq_tts_{int(time.time()*1000)}.aiff")
+    mp3_path = os.path.join(save_dir, f"qq_voice_{time.strftime('%Y%m%d_%H%M%S')}.mp3")
+    try:
+        # 选一个可用的中文音色
+        voices = ["Tingting", "Eddy", "Meijia", "Sinji"]
+        voice = None
+        try:
+            out = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=10).stdout
+            for v in voices:
+                if v in out or ("zh_CN" in out and v in out):
+                    voice = v
+                    break
+        except Exception:
+            pass
+        cmd = ["say", "-v", voice, "-o", aiff_path, text] if voice else ["say", "-o", aiff_path, text]
+        r = subprocess.run(cmd, capture_output=True, timeout=60)
+        if r.returncode != 0 or not os.path.exists(aiff_path):
+            logger.warning(f"[QQ] TTS say 失败: {r.stderr[:200]}")
+            return None
+        # 转 mp3（QQ 语音支持 mp3；silk 需专用编码，暂用 mp3）
+        r2 = subprocess.run(
+            ["ffmpeg", "-y", "-i", aiff_path, "-codec:a", "libmp3lame", "-b:a", "128k", mp3_path],
+            capture_output=True, timeout=120,
+        )
+        if r2.returncode != 0 or not os.path.exists(mp3_path):
+            logger.warning(f"[QQ] ffmpeg 转 mp3 失败: {r2.stderr[:200]}")
+            return None
+        logger.info(f"[QQ] TTS 语音生成成功: {mp3_path}")
+        return mp3_path
+    except Exception as e:
+        logger.error(f"[QQ] TTS 合成异常: {e}")
+        return None
+    finally:
+        if os.path.exists(aiff_path):
+            try: os.remove(aiff_path)
+            except Exception: pass
+
+
 def _extract_text_and_files(result: str):
     """从 AI 回复中分离出 文字摘要 + 文件路径列表（复用 server 的逻辑）"""
     file_paths = server.extract_file_paths(result)
@@ -679,6 +903,70 @@ def _extract_text_and_files(result: str):
     else:
         text_reply = result
     return text_reply, file_paths
+
+
+# ========== 关键词指令系统 ==========
+# 触发指令 → (回复内容, 是否走AI, 附加上下文)
+QQ_COMMANDS = {
+    "/配餐": ("好的，我来为您生成配餐方案。请把用户的账单/套餐情况发给我，我来给出比算推荐。", False),
+    "/质检": ("好的，我来对录音进行质检评分。请上传录音文件，我将按照质检标准评分并给出报告。", False),
+    "/日报": ("好的，我来生成今日工作日报。请把今天的工作内容发给我，我来整理成结构化日报。", False),
+    "/话术": ("好的，这是五步法营销话术：\n1. 外呼邀约\n2. 服务获信任\n3. 优化给方案\n4. 找坑给动力\n5. 比算促成交\n需要哪个场景的详细话术？", False),
+    "/帮助": (QQ_CMD_HELP, False),
+}
+
+# 指令别名（短指令）
+QQ_CMD_ALIASES = {
+    "/pc": "/配餐",
+    "/zj": "/质检",
+    "/rb": "/日报",
+    "/hs": "/话术",
+    "/bz": "/帮助",
+}
+
+
+def _match_command(content: str):
+    """匹配关键词指令。返回 (指令名, 剩余参数) 或 None"""
+    if not content:
+        return None
+    content = content.strip().lower()
+    for alias, real in QQ_CMD_ALIASES.items():
+        if content == alias or content.startswith(alias + " "):
+            content = real + content[len(alias):]
+            break
+    for cmd in QQ_COMMANDS:
+        if content == cmd or content.startswith(cmd + " "):
+            return cmd, content[len(cmd):].strip()
+    # 兼容去掉斜杠的写法
+    for cmd in QQ_COMMANDS:
+        plain = cmd[1:]
+        if content == plain or content.startswith(plain + " "):
+            return cmd, content[len(plain):].strip()
+    return None
+
+
+def _handle_command(message, cmd: str, args: str):
+    """处理指令：回复预设文案。返回 True 表示已处理（不再走 AI）"""
+    if cmd not in QQ_COMMANDS:
+        return False
+    reply, _ = QQ_COMMANDS[cmd]
+    if args:
+        reply = reply + f"\n（附加参数：{args}）"
+    _reply_text(message, reply)
+    return True
+
+
+def _rich_text_at(text: str, target_openid: str = ""):
+    """把文本中的 '@用户' 占位符替换为 QQ 富文本 @ 语法。
+
+    QQ 群聊富文本 @：content 中使用 `<@openid>` 语法（仅群聊有效）。
+    传入 target_openid 时，把文本中所有 '@xxx' 占位统一替换为 `<@openid>`；
+    单聊不支持 @（未传 openid 则原样返回）。
+    """
+    if not text or not target_openid:
+        return text
+    # 将文本中的 @占位 替换为 <@openid> 富文本语法
+    return re.sub(r"@([^\s，。；！？,.;!?]+)", f"<@{target_openid}>", text)
 
 
 # ========== 消息处理核心（复用 server.py 管线） ==========
@@ -693,6 +981,13 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
         else:
             # 单聊：已映射直接用昵称（避免触发企微通讯录查询报错）；未映射再走企微姓名管线
             user_name = display if display != from_user else server.get_user_name(from_user)
+
+        # 关键词指令优先（不走 AI，直接回复预设文案）
+        cmd_match = _match_command(text_content)
+        if cmd_match:
+            cmd, args = cmd_match
+            _handle_command(message, cmd, args)
+            return
 
         # 构建 prompt（复用 server.build_prompt）
         prompt = server.build_prompt(file_paths, text_content, user_name)
@@ -711,7 +1006,21 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
 
         # 分离文本与文件
         text_reply, paths = _extract_text_and_files(result)
-        _reply_text_and_files(message, text_reply, paths)
+        # AI 回复优先用 Markdown 排版（msg_type=2），失败降级纯文本
+        if text_reply and len(text_reply) > 12 and ("\n" in text_reply or "**" in text_reply or text_reply.startswith("#")):
+            fut = _reply_markdown(message, QQ_MD_MSG_PREFIX + text_reply)
+            if fut is None:
+                _reply_text_and_files(message, text_reply, paths)
+            else:
+                try:
+                    fut.result(timeout=30)
+                    # Markdown 成功则不再重复发文本；文件仍走被动回复
+                    if paths:
+                        _reply_files_only(message, paths)
+                except Exception:
+                    _reply_text_and_files(message, text_reply, paths)
+        else:
+            _reply_text_and_files(message, text_reply, paths)
 
         # 配餐等后处理动作（复用企微的台账/待办逻辑，但跳过企微 WS 依赖的部分）
         # 说明：QQ 场景下只做轻量后处理（台账+待办），不生成企微文档、不依赖企微 WS
@@ -735,11 +1044,24 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
         _reply_text_and_files(message, f"处理出错: {e}", [])
 
 
+def _file_type_by_ext(filename: str) -> int:
+    """根据扩展名推断 QQ 富媒体 file_type：1=图片 2=视频 3=语音 4=文件"""
+    ext = (filename or "").rsplit(".", 1)[-1].lower() if "." in (filename or "") else ""
+    if ext in ("jpg", "jpeg", "png", "gif", "webp", "bmp"):
+        return 1
+    if ext == "mp4":
+        return 2
+    if ext in ("silk", "mp3", "wav", "ogg", "amr"):
+        return 3
+    return 4
+
+
 def _reply_file_passive(message, file_path: str) -> bool:
     """群聊/私聊被动回复发文件（走 msg_id 被动通道，不受主动消息限制）。
 
     流程：读取本地文件 → base64 编码 → post files 上传拿 file_info →
           post messages(msg_type=7, media=file_info, msg_id=原消息id, msg_seq=递增)
+    按扩展名自动识别富媒体类型（图片/视频/语音/文件）。
     群聊被动回复有效期 5 分钟，超时则失败。
     返回 True/False
     """
@@ -759,6 +1081,7 @@ def _reply_file_passive(message, file_path: str) -> bool:
         file_b64 = _b64.b64encode(raw).decode()
         fname = os.path.basename(file_path)
         size = len(raw)
+        ftype = _file_type_by_ext(fname)
 
         is_group = isinstance(message, GroupMessage)
         openid = getattr(message, "group_openid", None) or getattr(getattr(message, "author", None), "user_openid", None)
@@ -767,13 +1090,13 @@ def _reply_file_passive(message, file_path: str) -> bool:
 
         # 1) 上传文件拿 file_info（≤5MB 直传 / >5MB 分片）
         if size > 5 * 1024 * 1024:
-            ok, media = _qq_chunked_upload("group" if is_group else "user", openid, raw, fname)
+            ok, media = _qq_chunked_upload("group" if is_group else "user", openid, raw, fname, file_type=ftype)
             if not ok:
                 logger.error(f"[QQ] 被动回复上传文件失败: {media}")
                 return False
         else:
             upload_payload = {
-                "file_type": 4,
+                "file_type": ftype,
                 "file_data": file_b64,
                 "srv_send_msg": False,
                 "file_name": fname,
@@ -840,6 +1163,24 @@ def _reply_text_and_files(message, text, file_paths):
         _reply_text(message, f"以下文件未能发送（可能回复超时或格式限制），请通过其他方式查看：\n{names}")
     if sent and not failed:
         logger.info(f"[QQ] 被动回复 {len(sent)} 个文件全部发送成功")
+
+
+def _reply_files_only(message, file_paths):
+    """只发文件不发文字（供 Markdown 成功后的文件回传复用）"""
+    if not file_paths:
+        return
+    sent = []
+    failed = []
+    for fp in file_paths:
+        if _reply_file_passive(message, fp):
+            sent.append(fp)
+        else:
+            failed.append(fp)
+    if failed:
+        names = "\n".join(os.path.basename(f) for f in failed)
+        _reply_text(message, f"以下文件未能发送（可能回复超时或格式限制）：\n{names}")
+    if sent and not failed:
+        logger.info(f"[QQ] 文件全部发送成功")
 
 
 def qq_push_image_passive(message, image_b64: str, caption: str = "") -> tuple:
@@ -924,6 +1265,101 @@ class QQOfficialClient(botpy.Client):
         """事件回调异常兜底：打印，不让异常静默吞掉"""
         logger.error(f"[QQ] 事件回调异常: {event_method}")
         traceback.print_exc()
+
+    # ---------- 群聊 / 好友 管理事件（public_messages intent） ----------
+    async def on_group_add_robot(self, event):
+        """机器人被拉入群聊"""
+        try:
+            gid = getattr(event, "group_openid", None) or ""
+            op = getattr(event, "op_member_openid", None) or ""
+            logger.info(f"[QQ] 机器人被拉入群聊: group={gid} op={_display_name(op)}")
+            # 尝试发一条欢迎消息（被动回复需 event_id；此处用主动消息尝试，失败不阻塞）
+            try:
+                from botpy.http import Route
+                client = self.api
+                route = Route("POST", "/v2/groups/{group_openid}/messages", group_openid=gid)
+                payload = {
+                    "msg_type": 0,
+                    "content": "大家好，我是星小辰！可以 @我 提问、让我生成配餐方案、质检录音、生成日报，输入 /帮助 查看全部指令。",
+                    "event_id": getattr(event, "event_id", None),
+                }
+                if getattr(event, "event_id", None):
+                    fut = asyncio.run_coroutine_threadsafe(client._http.request(route, json=payload), _QQ_LOOP)
+                    try:
+                        fut.result(timeout=10)
+                    except Exception as e:
+                        logger.warning(f"[QQ] 进群欢迎（event_id通道）失败: {e}")
+                _remember_session("group", gid)
+            except Exception as e:
+                logger.warning(f"[QQ] 进群欢迎处理异常: {e}")
+        except Exception as e:
+            logger.error(f"[QQ] on_group_add_robot 异常: {e}")
+
+    async def on_group_del_robot(self, event):
+        """机器人被移出群聊"""
+        try:
+            gid = getattr(event, "group_openid", None) or ""
+            op = getattr(event, "op_member_openid", None) or ""
+            logger.info(f"[QQ] 机器人被移出群聊: group={gid} op={_display_name(op)}")
+            # 清理该群的被动回复记录
+            with QQ_LAST_GROUP_MSG_LOCK:
+                QQ_LAST_GROUP_MSG.pop(gid, None)
+            QQ_SESSION.get("group", {}).pop(gid, None)
+            _persist_status()
+        except Exception as e:
+            logger.error(f"[QQ] on_group_del_robot 异常: {e}")
+
+    async def on_friend_add(self, event):
+        """用户添加机器人为好友"""
+        try:
+            uid = getattr(event, "openid", None) or ""
+            logger.info(f"[QQ] 用户添加机器人好友: {_display_name(uid)}")
+            _remember_session("user", uid)
+        except Exception as e:
+            logger.error(f"[QQ] on_friend_add 异常: {e}")
+
+    async def on_friend_del(self, event):
+        """用户删除机器人好友"""
+        try:
+            uid = getattr(event, "openid", None) or ""
+            logger.info(f"[QQ] 用户删除机器人好友: {_display_name(uid)}")
+            QQ_SESSION.get("user", {}).pop(uid, None)
+            _persist_status()
+        except Exception as e:
+            logger.error(f"[QQ] on_friend_del 异常: {e}")
+
+    async def on_group_msg_receive(self, event):
+        """群聊开启主动消息（机器人获得主动推送权限）"""
+        try:
+            gid = getattr(event, "group_openid", None) or ""
+            op = getattr(event, "op_member_openid", None) or ""
+            logger.info(f"[QQ] 群聊开启主动消息: group={gid} op={_display_name(op)}")
+        except Exception as e:
+            logger.error(f"[QQ] on_group_msg_receive 异常: {e}")
+
+    async def on_group_msg_reject(self, event):
+        """群聊拒绝机器人主动消息"""
+        try:
+            gid = getattr(event, "group_openid", None) or ""
+            logger.info(f"[QQ] 群聊拒绝主动消息: group={gid}")
+        except Exception as e:
+            logger.error(f"[QQ] on_group_msg_reject 异常: {e}")
+
+    async def on_c2c_msg_receive(self, event):
+        """用户开启单聊主动消息"""
+        try:
+            uid = getattr(event, "openid", None) or ""
+            logger.info(f"[QQ] 用户开启单聊主动消息: {_display_name(uid)}")
+        except Exception as e:
+            logger.error(f"[QQ] on_c2c_msg_receive 异常: {e}")
+
+    async def on_c2c_msg_reject(self, event):
+        """用户拒绝单聊主动消息"""
+        try:
+            uid = getattr(event, "openid", None) or ""
+            logger.info(f"[QQ] 用户拒绝单聊主动消息: {_display_name(uid)}")
+        except Exception as e:
+            logger.error(f"[QQ] on_c2c_msg_reject 异常: {e}")
 
     async def on_group_at_message_create(self, message: GroupMessage):
         """群聊内 @ 机器人 触发"""
@@ -1041,6 +1477,9 @@ def _start_internal_http():
                 caption = body.get("caption", "")
                 file_b64 = body.get("file", "")  # 可选：文件 base64
                 filename = body.get("filename", "")  # 可选：文件名
+                msg_type = body.get("msg_type", 0)  # 0=文本 2=Markdown（可选）
+                at_user = body.get("at", "")  # 可选：富文本 @ 目标 openid（仅群聊）
+                voice_text = body.get("voice_text", "")  # 可选：TTS 语音文本
                 # 群聊下发：官方已下线群主动推送，统一走被动回复通道（复用最近 @ 的 msg_id）
                 if target == "group":
                     rec = _get_last_group_msg(openid)
@@ -1088,8 +1527,30 @@ def _start_internal_http():
                         return
                     elif image_b64:
                         ok, detail = qq_push_image_passive(fake, image_b64, caption)
+                    elif voice_text:
+                        # TTS 语音：合成 mp3 → 被动回复发语音
+                        vpath = _tts_say(voice_text)
+                        if vpath:
+                            ok = _reply_file_passive(fake, vpath)
+                            detail = "" if ok else "语音发送失败（可能已超过5分钟有效期）"
+                        else:
+                            ok, detail = False, "TTS 语音合成失败"
+                    elif msg_type == 2:
+                        fut = _reply_markdown(fake, content)
+                        if fut is not None and hasattr(fut, "result"):
+                            try:
+                                fut.result(timeout=30)
+                                ok, detail = True, ""
+                            except Exception as e:
+                                ok, detail = False, f"被动回复Markdown失败: {e}"
+                        else:
+                            ok, detail = False, "被动回复Markdown失败"
                     else:
-                        fut = _reply_text(fake, content)
+                        # 富文本 @（若指定 at 且群聊，替换文本中的 @用户 为富文本语法）
+                        send_content = content
+                        if at_user:
+                            send_content = _rich_text_at(send_content, at_user)
+                        fut = _reply_text(fake, send_content)
                         # _reply_text 返回 Future（异步）或 None（失败），统一解析为布尔
                         if fut is not None and hasattr(fut, "result"):
                             try:
@@ -1112,10 +1573,28 @@ def _start_internal_http():
                 elif image_b64:
                     # 图片推送
                     ok, detail = qq_push_image(target, openid, image_b64, caption)
+                elif voice_text:
+                    # TTS 语音推送（主动通道）
+                    vpath = _tts_say(voice_text)
+                    if vpath:
+                        import base64 as _b64
+                        with open(vpath, "rb") as f:
+                            vraw = f.read()
+                        ok, detail = qq_push_file(target, openid, _b64.b64encode(vraw).decode(), os.path.basename(vpath), caption)
+                    else:
+                        ok, detail = False, "TTS 语音合成失败"
+                elif msg_type == 2:
+                    # Markdown 主动推送
+                    if target == "group":
+                        ok, detail = _qq_push_markdown("group", openid, content)
+                    else:
+                        ok, detail = _qq_push_markdown("user", openid, content)
                 elif target == "group":
                     ok = qq_push_to_group(openid, content)
+                    detail = "" if ok else "群聊文本推送失败（可能超频或群不可达），见日志"
                 elif target == "user":
                     ok = qq_push_to_user(openid, content)
+                    detail = "" if ok else "单聊文本推送失败（可能超频或不可达），见日志"
                 else:
                     ok, detail = False, "未知目标"
                 if isinstance(ok, tuple):

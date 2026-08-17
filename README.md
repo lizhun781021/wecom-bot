@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'ff27fc20-1f8c-41c8-b893-5bb1d1d9b799'
-  PropagateID: 'ff27fc20-1f8c-41c8-b893-5bb1d1d9b799'
-  ReservedCode1: '632043f3-7f21-4aac-b998-8afb049224e4'
-  ReservedCode2: '632043f3-7f21-4aac-b998-8afb049224e4'
+  ProduceID: '992d260b-fa4c-4e73-80a4-5b5afae8704b'
+  PropagateID: '992d260b-fa4c-4e73-80a4-5b5afae8704b'
+  ReservedCode1: '9056ebcb-eb7c-49a0-bd82-a76bafa438f4'
+  ReservedCode2: '9056ebcb-eb7c-49a0-bd82-a76bafa438f4'
 ---
 
 # 企微Python机器人（长连接模式）
@@ -33,7 +33,7 @@ v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送�
 【后处理】AI配餐回复 → 自动写台账+建待办+生成文档 → 群里发通知
 ```
 
-## QQ 官方机器人（v1.4.0）
+## QQ 官方机器人（v1.6.0）
 ```
 独立进程运行（与企微主服务互不干扰）：
     python qq_official_adapter.py
@@ -52,6 +52,15 @@ v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送�
 先到 q.qq.com 申请官方机器人（需审核），拿到 AppID/Secret 后填入即可启用
 QQ 官方消息不含昵称字段、也没有查询昵称的开放接口，
 在 QQ_USER_MAP 里给 openid 配昵称，面板就显示「李准」而不是一长串编码（v1.5.3）
+
+v1.6.0 新增能力：
+  · Markdown 消息：AI 回复自动 Markdown 排版（msg_type=2），失败降级纯文本
+  · 视频消息：mp4 ≤30MB 软限制，超限自动降级文件类型
+  · 语音消息：本地 TTS 合成（macOS say + ffmpeg），面板输入文本即发语音
+  · 主动@成员：面板填 @openid，文本中 @占位 自动替换为 <@openid> 富文本语法
+  · 关键词指令：/配餐 /质检 /日报 /话术 /帮助（别名 /pc /zj /rb /hs /bz）
+  · 事件回调：进群欢迎、退群清理、好友增删、群/单聊权限变更（8 个事件）
+  · 富媒体自动识别：jpg→图片 / mp4→视频 / mp3·wav·ogg→语音 / 其他→文件
 ```
 
 ## 管理面板（v1.5.2 双通道）
@@ -59,31 +68,16 @@ QQ 官方消息不含昵称字段、也没有查询昵称的开放接口，
 Web 面板 http://127.0.0.1:8505 支持「企微通道 + QQ通道」双通道管理：
   · 状态卡片：企微（连接/心跳/重连/消息数）+ QQ（连接/收/回/最近会话）
   · 消息记录：区分来源（企微 / QQ 标签），QQ 消息落盘合并展示
-  · 主动推送：企微群/个人 + QQ群/私聊（QQ 自动加载最近会话快捷选择，支持文本与图片）
+  · 主动推送：企微群/个人 + QQ群/私聊（QQ 自动加载最近会话快捷选择，支持文本/Markdown/图片/视频/语音TTS/文件/@）
   · 实时日志：企微日志 + QQ 适配器日志（[QQ] 前缀）合并展示
 
 跨进程说明：dashboard（8505）与 QQ 适配器为独立进程，
 QQ 主动推送经本机内部端点 127.0.0.1:18506 转发（仅回环，不对外暴露）。
 QQ 图片推送：面板选「图片」格式 → base64 直传官方 v2 /files 接口 → 富媒体消息（≤5MB）
+QQ 视频推送：面板选「视频」格式 → base64 → 富媒体消息（mp4 ≤30MB 软限制，超限降级文件）
+QQ 语音推送：面板选「语音 (TTS)」→ 本地合成 mp3 → 富媒体消息（file_type=3）
+QQ @推送：面板选「文本/Markdown」填 @openid → 文本中 @占位 替换为 <@openid> 富文本语法（群聊）
 QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合并展示（QQ 绿色标签）
-
-## QQ 官方机器人（v1.4.0）
-```
-独立进程运行（与企微主服务互不干扰）：
-    python qq_official_adapter.py
-
-接入：腾讯官方 qq-botpy SDK（WebSocket 长连接，无需公网 IP）
-监听：群@消息（on_group_at_message_create）+ 单聊消息（on_c2c_message_create）
-处理：复用 server.py 管线 → 同一 8088 代理 → 同一套河南标准化技能
-回复：QQ 官方 API（post_group_message / post_c2c_message）
-
-配置（config.py）：
-    QQ_ENABLED = True
-    QQ_APPID  = "开放平台审核通过后的 AppID"
-    QQ_SECRET = "AppSecret"
-
-先到 q.qq.com 申请官方机器人（需审核），拿到 AppID/Secret 后填入即可启用
-```
 
 ## 架构
 ```
@@ -104,7 +98,8 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 本项目使用语义化版本号（`主版本.次版本.修订号`），通过 git tag 标记每个版本：
 
 | 版本 | 日期 | 说明 |
-|------|------|------|
+| --- | --- | --- |
+| v1.6.0 | 2026-08-17 | QQ 机器人 6 大新能力：Markdown/视频/语音(TTS)/主动@/关键词指令/事件回调，面板新增视频与语音格式 |
 | v1.5.10 | 2026-08-17 | 面板→QQ群下发打通（被动回复通道）：自动复用最近5分钟内@的msg_id发文本/图片/文件，重启持久化 |
 | v1.5.9 | 2026-08-16 | QQ文件支持>5MB分片上传（官方upload_prepare→PUT→part_finish→files，上限200MB） |
 | v1.5.8 | 2026-08-16 | 修复QQ文件推送文件名丢失（上传带 file_name，不再显示"未命名"） |
@@ -135,7 +130,7 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 | `wecom_api.py` | 企微文档/表格/待办 API 封装（通过 wecom-cli 调用） |
 | `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送，图片超2MB自动压缩） |
 | `dashboard.py` | Web管理面板（端口8505，企微+QQ双通道状态监控+主动推送+消息记录+实时日志，Tab菜单，v1.5.0 支持 QQ） |
-| `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送 + 内部推送端点18506，v1.4.0 新增；v1.5.3 增加 openid→昵称显示映射） |
+| `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送 + 内部推送端点18506，v1.4.0 新增；v1.5.3 增加 openid→昵称显示映射；v1.6.0 增加 Markdown/视频/语音/TTS/@/指令/事件回调） |
 | `config.py` | 配置文件（**已加入.gitignore，不上传GitHub**） |
 | `config_example.py` | 配置模板（脱敏样例，复制为config.py后填入真实凭证） |
 | `peican_sheet_cache.json` | 配餐台账表格 docid/sheet_id 缓存 |

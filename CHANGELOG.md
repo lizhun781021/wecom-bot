@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'd5251e05-cd59-4018-acd0-02fee5bb0121'
-  PropagateID: 'd5251e05-cd59-4018-acd0-02fee5bb0121'
-  ReservedCode1: '26542a31-8e8a-4148-ba20-2bf63008c03e'
-  ReservedCode2: '26542a31-8e8a-4148-ba20-2bf63008c03e'
+  ProduceID: '5886127f-a5a6-455f-930e-f922bc9d372b'
+  PropagateID: '5886127f-a5a6-455f-930e-f922bc9d372b'
+  ReservedCode1: '45d3891b-2663-4a3f-8ca2-252dcdc5b0c9'
+  ReservedCode2: '45d3891b-2663-4a3f-8ca2-252dcdc5b0c9'
 ---
 
 # 更新日志
@@ -18,7 +18,39 @@ AIGC:
 
 ---
 
-## v1.5.10 (2026-08-17)
+## v1.6.0 (2026-08-17)
+
+**QQ 机器人 6 大新能力**：Markdown 消息、视频消息、语音消息（本地 TTS）、主动@成员、关键词指令系统、富文本消息、管理事件回调（机器人进群/退群、好友增删、权限变更）。
+
+### 新增功能
+- **Markdown 消息**（msg_type=2）：AI 回复自动检测 Markdown 特征（换行/加粗/标题）并排版发送，失败自动降级纯文本；`/push` 支持 `msg_type=2` 主动推送 Markdown
+- **视频消息**（msg_type=7 + file_type=2）：mp4 ≤30MB 软限制，超限自动降级为文件类型（file_type=4）；面板新增「视频」格式（≤200MB 硬限制）
+- **语音消息**（msg_type=7 + file_type=3）：本地 TTS 合成（macOS say + ffmpeg 转 mp3），支持中文音色；面板新增「语音 (TTS)」格式，直接输入文本即可合成发送
+- **主动@成员**：面板文本/Markdown 新增 @用户输入框（QQ 群聊），文本内 `@用户` 占位自动替换为 `<@openid>` 富文本语法
+- **关键词指令系统**：`/配餐` `/质检` `/日报` `/话术` `/帮助`（含短别名 `/pc` `/zj` `/rb` `/hs` `/bz`，兼容去掉斜杠写法），触发后直接回复预设文案、不走 AI
+- **富文本消息**：文本内嵌 @ 语法替换（`_rich_text_at`），群聊有效
+- **管理事件回调**（public_messages intent 内 8 种）：`on_group_add_robot`（进群欢迎语）、`on_group_del_robot`（清理会话与被动回复记录）、`on_friend_add/del`、`on_group_msg_receive/reject`、`on_c2c_msg_receive/reject`
+- **富媒体自动类型识别**：`_file_type_by_ext` 按扩展名推断（jpg→1 图片 / mp4→2 视频 / mp3·wav·ogg→3 语音 / 其他→4 文件），文件被动回复自动识别类型
+- **dashboard.py**：消息格式新增「视频」「语音 (TTS)」，新增 @用户输入框；后端 `/api/push` 支持 videoData/videoName/voiceText/at 字段并转发至适配器
+
+### 修复
+- `_tts_say`：`finally` 中变量名错误（`aiff` 未定义）导致 TTS 合成异常 → 改为 `aiff_path`
+- `/push` 端点：`qq_push_to_group/user` 返回布尔时 `detail` 变量未初始化 → 补充默认错误信息
+- `_match_command` / `_handle_command`：引用未定义变量 `QQ_CMD` → 改为 `QQ_COMMANDS`
+- `_rich_text_at`：@ 占位替换逻辑修正——替换为 `<@openid>` 富文本语法（原实现错误地替换为 `<@名字>`）
+
+### 实测记录（2026-08-17）
+- 单聊文本/Markdown/图片/视频/语音(TTS)/mp3 文件推送全部成功
+- 面板全链路（8505 → 18506）文本/Markdown/视频/语音/@ 均成功
+- 指令匹配 8 组用例全部通过（含别名与去斜杠）
+- 富文本 @ 替换、文件类型推断、TTS 合成（mp3 61KB）均验证通过
+- 群聊被动回复（需群内 @ 机器人后 5 分钟内下发）待真实群实测
+
+### 备注
+- 事件回调仅支持官方 API 提供的 8 种管理事件；群成员进出、群创建/解散、消息撤回官方不支持（需频道 Intent，当前机器人是群场景）
+- 语音软限制 20MB（mp3），视频软限制 30MB（mp4），超限自动降级为文件类型；文件硬限制 200MB
+
+---
 
 **面板→QQ群聊下发打通（被动回复通道）**：腾讯已下线 QQ 机器人群聊主动消息推送（40034105），本次实现面板向 QQ 群下发文本/图片/文件均走**被动回复通道**——自动复用群内最近一次 @ 机器人的 msg_id，无需手动复制 msg_id。
 
