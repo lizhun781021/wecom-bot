@@ -108,8 +108,10 @@ QQ_CMD_HELP = (
 # 状态落地文件（dashboard 等跨进程读取用）
 QQ_STATUS_FILE = os.path.join(PROJECT_ROOT, "qq_status.json")
 QQ_MESSAGES_FILE = os.path.join(PROJECT_ROOT, "qq_messages.json")
+QQ_NAME_CACHE_FILE = os.path.join(PROJECT_ROOT, "qq_name_cache.json")  # openid → 昵称缓存
 QQ_MESSAGES = []  # 内存缓存最近100条
 QQ_MESSAGES_LOCK = threading.Lock()
+_qq_name_cache = {}  # {openid: nickname} 内存缓存
 
 
 def _load_qq_messages():
@@ -127,6 +129,119 @@ def _load_qq_messages():
 
 
 _load_qq_messages()
+
+
+def _load_qq_name_cache():
+    """启动时加载 QQ 昵称缓存（openid → nickname）"""
+    global _qq_name_cache
+    try:
+        if os.path.exists(QQ_NAME_CACHE_FILE):
+            with open(QQ_NAME_CACHE_FILE, "r", encoding="utf-8") as f:
+                _qq_name_cache = json.load(f)
+            logger.info(f"[QQ] 启动加载昵称缓存 {len(_qq_name_cache)} 条")
+    except Exception as e:
+        logger.warning(f"[QQ] 加载昵称缓存失败: {e}")
+        _qq_name_cache = {}
+
+
+def _save_qq_name_cache():
+    """保存 QQ 昵称缓存到本地"""
+    try:
+        with open(QQ_NAME_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_qq_name_cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"[QQ] 保存昵称缓存失败: {e}")
+
+
+_load_qq_name_cache()
+
+
+async def _fetch_qq_member_nickname(group_openid: str, member_openid: str) -> str:
+    """调用 QQ 群成员 API 获取昵称（异步，需在 event loop 中调用）
+
+    API: GET /v2/groups/{group_openid}/members/{member_openid}
+    返回: {"member": {"user_openid": "xxx", "nickname": "xxx", ...}}
+    """
+    if not _QQ_CLIENT or not group_openid or not member_openid:
+        return ""
+    try:
+        from botpy.http import Route
+        route = Route("GET", "/v2/groups/{group_openid}/members/{member_openid}",
+                       group_openid=group_openid, member_openid=member_openid)
+        resp = await _QQ_CLIENT.api._http.request(route)
+        nickname = resp.get("member", {}).get("nickname", "")
+        if nickname:
+            logger.info(f"[QQ] 获取成员昵称: {member_openid[:12]}... → {nickname}")
+        return nickname
+    except Exception as e:
+        logger.debug(f"[QQ] 获取成员昵称失败: {e}")
+        return ""
+
+
+def _resolve_qq_nickname(openid: str, group_openid: str = "") -> str:
+    """快速同步解析：手动映射 > 缓存 > 降级截断展示（不查 API，任何线程可安全调用）"""
+    if not openid:
+        return ""
+    # 1. 手动映射优先
+    if hasattr(config, "QQ_USER_MAP") and openid in config.QQ_USER_MAP:
+        return config.QQ_USER_MAP[openid]
+    # 2. 内存/磁盘缓存
+    if openid in _qq_name_cache:
+        return _qq_name_cache[openid]
+    # 3. 降级：截断 openid 展示
+    return _short_openid(openid)
+
+
+async def _resolve_qq_nickname_async(openid: str, group_openid: str = "") -> str:
+    """异步完整解析：手动映射 > 缓存 > API查询 > 降级截断展示（供事件循环内 await 调用）"""
+    if not openid:
+        return ""
+    # 1. 手动映射优先
+    if hasattr(config, "QQ_USER_MAP") and openid in config.QQ_USER_MAP:
+        return config.QQ_USER_MAP[openid]
+    # 2. 内存/磁盘缓存
+    if openid in _qq_name_cache:
+        return _qq_name_cache[openid]
+    # 3. 有 group_openid 时 await API 查询（仅群聊场景；事件循环内 await 不阻塞）
+    if group_openid:
+        nickname = await _fetch_qq_member_nickname(group_openid, openid)
+        if nickname:
+            _qq_name_cache[openid] = nickname
+            _save_qq_name_cache()
+            return nickname
+    # 4. 降级：截断 openid 展示
+    return _short_openid(openid)
+
+
+def _display_name_sync(openid: str, max_len: int = 40, group_openid: str = "") -> str:
+    """同步完整解析（供 worker 线程调用）：手动映射 > 缓存 > API查询 > 截断展示。
+
+    内部用 run_coroutine_threadsafe 提交到事件循环执行并阻塞等待，
+    仅可在非事件循环线程使用（事件循环线程内会死锁，请用 _display_name_async）。
+    """
+    if not openid:
+        return ""
+    # 1. 手动映射优先
+    if hasattr(config, "QQ_USER_MAP") and openid in config.QQ_USER_MAP:
+        return str(config.QQ_USER_MAP[openid])[:max_len]
+    # 2. 内存/磁盘缓存
+    if openid in _qq_name_cache:
+        return str(_qq_name_cache[openid])[:max_len]
+    # 3. 有 group_openid 时异步查询 API（仅群聊场景；worker 线程可阻塞等待）
+    if group_openid and _QQ_LOOP and not _QQ_LOOP.is_closed():
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                _fetch_qq_member_nickname(group_openid, openid), _QQ_LOOP
+            )
+            nickname = future.result(timeout=5)  # 最多等 5 秒
+            if nickname:
+                _qq_name_cache[openid] = nickname
+                _save_qq_name_cache()
+                return str(nickname)[:max_len]
+        except Exception as e:
+            logger.debug(f"[QQ] 昵称查询超时/失败: {e}")
+    # 4. 降级：截断 openid 展示
+    return str(_short_openid(openid))[:max_len]
 
 
 def _persist_status():
@@ -208,13 +323,25 @@ def _get_last_group_msg(group_openid: str):
         return rec
 
 
-def _display_name(openid: str, max_len: int = 40) -> str:
-    """openid → 可读昵称（QQ_USER_MAP 手动映射），映射不到保留原值"""
+def _display_name(openid: str, max_len: int = 40, group_openid: str = "") -> str:
+    """openid → 可读昵称：手动映射 > 缓存 > 截断展示（快速同步版，不查 API）
+
+    事件循环线程内请用 _display_name_async（避免阻塞），worker 线程想查 API 用 _display_name_sync。
+    """
     if not openid:
         return ""
-    name = config.QQ_USER_MAP.get(openid) if hasattr(config, "QQ_USER_MAP") else None
-    if not name:
-        name = openid
+    name = _resolve_qq_nickname(openid, group_openid)
+    return str(name)[:max_len]
+
+
+async def _display_name_async(openid: str, max_len: int = 40, group_openid: str = "") -> str:
+    """openid → 可读昵称（异步完整解析版）：手动映射 > 缓存 > API查询 > 截断展示
+
+    供事件循环内 await 调用（如 on_group_at_message_create 等 botpy 回调），不会阻塞事件循环。
+    """
+    if not openid:
+        return ""
+    name = await _resolve_qq_nickname_async(openid, group_openid)
     return str(name)[:max_len]
 
 
@@ -239,7 +366,7 @@ def _record_message(msg_type: str, user: str, preview: str, status: str = "处�
         "full_time": time.strftime("%Y-%m-%d %H:%M:%S"),
         "source": "qq",
         "type": msg_type,
-        "user": _display_name(user),
+        "user": user,  # 调用方已传解析好的展示名（openid 或昵称），这里不再二次解析
         "preview": (preview or "")[:80],
         "status": status,
         "scene": scene if scene in ("group", "single") else "",
@@ -1009,9 +1136,10 @@ def _rich_text_at(text: str, target_openid: str = ""):
 def _handle_qq_message(message, from_user, text_content, file_paths, is_group: bool):
     """QQ 消息统一入口：走 server.process_and_reply 的同款逻辑（但回复走 QQ 官方 API）"""
     msg_id = getattr(message, "id", None) or ""
+    group_openid = getattr(message, "group_openid", None) or ""
     try:
-        # 显示名：优先 QQ_USER_MAP 手动映射，映射不到保留 openid
-        display = _display_name(from_user, max_len=20)
+        # 显示名：worker 线程内同步完整解析（手动映射 > 缓存 > API查询 > 截断展示）
+        display = _display_name_sync(from_user, max_len=20, group_openid=group_openid)
         if is_group:
             user_name = display
         else:
@@ -1314,27 +1442,9 @@ class QQOfficialClient(botpy.Client):
         try:
             gid = getattr(event, "group_openid", None) or ""
             op = getattr(event, "op_member_openid", None) or ""
-            logger.info(f"[QQ] 机器人被拉入群聊: group={gid} op={_display_name(op)}")
-            _record_message("event", _display_name(op), f"机器人被拉入群聊 (群 {_short_openid(gid)})", status="事件", scene="group")
-            # 尝试发一条欢迎消息（被动回复需 event_id；此处用主动消息尝试，失败不阻塞）
-            try:
-                from botpy.http import Route
-                client = self.api
-                route = Route("POST", "/v2/groups/{group_openid}/messages", group_openid=gid)
-                payload = {
-                    "msg_type": 0,
-                    "content": "大家好，我是星小辰！可以 @我 提问、让我生成配餐方案、质检录音、生成日报，输入 /帮助 查看全部指令。",
-                    "event_id": getattr(event, "event_id", None),
-                }
-                if getattr(event, "event_id", None):
-                    fut = asyncio.run_coroutine_threadsafe(client._http.request(route, json=payload), _QQ_LOOP)
-                    try:
-                        fut.result(timeout=10)
-                    except Exception as e:
-                        logger.warning(f"[QQ] 进群欢迎（event_id通道）失败: {e}")
-                _remember_session("group", gid)
-            except Exception as e:
-                logger.warning(f"[QQ] 进群欢迎处理异常: {e}")
+            op_name = await _display_name_async(op, max_len=20, group_openid=gid)
+            logger.info(f"[QQ] 机器人被拉入群聊: group={gid} op={op_name}")
+            _record_message("event", op_name, f"机器人被拉入群聊 (群 {_short_openid(gid)})", status="事件", scene="group")
         except Exception as e:
             logger.error(f"[QQ] on_group_add_robot 异常: {e}")
 
@@ -1343,13 +1453,9 @@ class QQOfficialClient(botpy.Client):
         try:
             gid = getattr(event, "group_openid", None) or ""
             op = getattr(event, "op_member_openid", None) or ""
-            logger.info(f"[QQ] 机器人被移出群聊: group={gid} op={_display_name(op)}")
-            _record_message("event", _display_name(op), f"机器人被移出群聊 (群 {_short_openid(gid)})", status="事件", scene="group")
-            # 清理该群的被动回复记录
-            with QQ_LAST_GROUP_MSG_LOCK:
-                QQ_LAST_GROUP_MSG.pop(gid, None)
-            QQ_SESSION.get("group", {}).pop(gid, None)
-            _persist_status()
+            op_name = await _display_name_async(op, max_len=20, group_openid=gid)
+            logger.info(f"[QQ] 机器人被移出群聊: group={gid} op={op_name}")
+            _record_message("event", op_name, f"机器人被移出群聊 (群 {_short_openid(gid)})", status="事件", scene="group")
         except Exception as e:
             logger.error(f"[QQ] on_group_del_robot 异常: {e}")
 
@@ -1357,8 +1463,9 @@ class QQOfficialClient(botpy.Client):
         """用户添加机器人为好友"""
         try:
             uid = getattr(event, "openid", None) or ""
-            logger.info(f"[QQ] 用户添加机器人好友: {_display_name(uid)}")
-            _record_message("event", _display_name(uid), "用户添加机器人好友", status="事件", scene="single")
+            uid_name = await _display_name_async(uid, max_len=20)
+            logger.info(f"[QQ] 用户添加机器人好友: {uid_name}")
+            _record_message("event", uid_name, "用户添加机器人好友", status="事件", scene="single")
             _remember_session("user", uid)
         except Exception as e:
             logger.error(f"[QQ] on_friend_add 异常: {e}")
@@ -1367,8 +1474,9 @@ class QQOfficialClient(botpy.Client):
         """用户删除机器人好友"""
         try:
             uid = getattr(event, "openid", None) or ""
-            logger.info(f"[QQ] 用户删除机器人好友: {_display_name(uid)}")
-            _record_message("event", _display_name(uid), "用户删除机器人好友", status="事件", scene="single")
+            uid_name = await _display_name_async(uid, max_len=20)
+            logger.info(f"[QQ] 用户删除机器人好友: {uid_name}")
+            _record_message("event", uid_name, "用户删除机器人好友", status="事件", scene="single")
             QQ_SESSION.get("user", {}).pop(uid, None)
             _persist_status()
         except Exception as e:
@@ -1379,8 +1487,9 @@ class QQOfficialClient(botpy.Client):
         try:
             gid = getattr(event, "group_openid", None) or ""
             op = getattr(event, "op_member_openid", None) or ""
-            logger.info(f"[QQ] 群聊开启主动消息: group={gid} op={_display_name(op)}")
-            _record_message("event", _display_name(op), f"群聊开启主动消息权限 (群 {_short_openid(gid)})", status="事件", scene="group")
+            op_name = await _display_name_async(op, max_len=20, group_openid=gid)
+            logger.info(f"[QQ] 群聊开启主动消息: group={gid} op={op_name}")
+            _record_message("event", op_name, f"群聊开启主动消息权限 (群 {_short_openid(gid)})", status="事件", scene="group")
         except Exception as e:
             logger.error(f"[QQ] on_group_msg_receive 异常: {e}")
 
@@ -1397,8 +1506,9 @@ class QQOfficialClient(botpy.Client):
         """用户开启单聊主动消息"""
         try:
             uid = getattr(event, "openid", None) or ""
-            logger.info(f"[QQ] 用户开启单聊主动消息: {_display_name(uid)}")
-            _record_message("event", _display_name(uid), "用户开启单聊主动消息权限", status="事件", scene="single")
+            uid_name = await _display_name_async(uid, max_len=20)
+            logger.info(f"[QQ] 用户开启单聊主动消息: {uid_name}")
+            _record_message("event", uid_name, "用户开启单聊主动消息权限", status="事件", scene="single")
         except Exception as e:
             logger.error(f"[QQ] on_c2c_msg_receive 异常: {e}")
 
@@ -1406,8 +1516,9 @@ class QQOfficialClient(botpy.Client):
         """用户拒绝单聊主动消息"""
         try:
             uid = getattr(event, "openid", None) or ""
-            logger.info(f"[QQ] 用户拒绝单聊主动消息: {_display_name(uid)}")
-            _record_message("event", _display_name(uid), "用户拒绝单聊主动消息", status="事件", scene="single")
+            uid_name = await _display_name_async(uid, max_len=20)
+            logger.info(f"[QQ] 用户拒绝单聊主动消息: {uid_name}")
+            _record_message("event", uid_name, "用户拒绝单聊主动消息", status="事件", scene="single")
         except Exception as e:
             logger.error(f"[QQ] on_c2c_msg_reject 异常: {e}")
 
@@ -1447,9 +1558,10 @@ class QQOfficialClient(botpy.Client):
             if not content and not file_paths:
                 return
 
-            # 记录到消息列表（供面板消息记录展示）
+            # 记录到消息列表（供面板消息记录展示）：事件循环内用异步解析（await API 不阻塞）
+            display_user = await _display_name_async(from_user, max_len=20, group_openid=group_openid or "")
             _record_message("text" if content else "image",
-                            from_user,
+                            display_user,
                             content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"),
                             scene="group",
                             msg_id=getattr(message, "id", None) or "")
@@ -1489,9 +1601,10 @@ class QQOfficialClient(botpy.Client):
             if not content and not file_paths:
                 return
 
-            # 记录到消息列表（供面板消息记录展示）
+            # 记录到消息列表（供面板消息记录展示）：异步解析（await 不阻塞事件循环）
+            display_user = await _display_name_async(from_user, max_len=20)
             _record_message("text" if content else "image",
-                            from_user,
+                            display_user,
                             content or ("图片" if any(p[1] == "image" for p in file_paths) else "消息"),
                             scene="single",
                             msg_id=getattr(message, "id", None) or "")

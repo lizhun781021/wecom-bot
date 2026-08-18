@@ -479,7 +479,7 @@ def _query_userid_name(userid):
 
 
 def get_user_name(userid):
-    """将企微userid转换为姓名：手动映射 > 本地缓存 > API查询 > 降级显示原始ID"""
+    """将企微userid转换为姓名：手动映射 > 本地缓存 > API查询 > 降级截断展示"""
     # 1. 手动映射优先
     if userid in config.WECOM_USER_MAP:
         return config.WECOM_USER_MAP[userid]
@@ -492,7 +492,9 @@ def get_user_name(userid):
         _name_cache[userid] = name
         _save_name_cache()
         return name
-    # 4. 查不到，降级显示原始ID
+    # 4. 查不到，降级截断展示（避免显示过长的原始ID）
+    if len(userid) > 16:
+        return userid[:8] + "..." + userid[-6:]
     return userid
 
 

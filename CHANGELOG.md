@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '96ef3dc1-7ff1-47df-a010-9a0e139acaf4'
-  PropagateID: '96ef3dc1-7ff1-47df-a010-9a0e139acaf4'
-  ReservedCode1: '89919050-7d24-4d98-89ba-90abecaf3702'
-  ReservedCode2: '89919050-7d24-4d98-89ba-90abecaf3702'
+  ProduceID: '58b62412-54d2-4c2b-8eb1-b83a67c78f88'
+  PropagateID: '58b62412-54d2-4c2b-8eb1-b83a67c78f88'
+  ReservedCode1: '075db902-76e4-4419-ad70-0f3ce61ef16b'
+  ReservedCode2: '075db902-76e4-4419-ad70-0f3ce61ef16b'
 ---
 
 # 更新日志
@@ -15,6 +15,31 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.8.1 (2026-08-18)
+
+**修复：QQ 面板消息记录显示 openid 而非昵称**。
+
+### 背景
+v1.8.0 新增的 QQ 昵称解析代码存在两个缺陷，导致同事 @ 机器人后面板仍显示截断的 openid（如 `E3AC7D1AD6...F07A347`）：
+1. **事件循环死锁**：`_resolve_qq_nickname` 内部用 `run_coroutine_threadsafe` + `future.result(timeout=5)` 同步等待 API 结果，而它在事件循环线程内被调用（`on_group_at_message_create` → `_display_name` → `_record_message`），提交的协程要等事件循环空闲才能执行，但线程正阻塞等待结果 → 永远超时 → 走截断降级。
+2. **二次解析**：调用方已把解析好的展示名传给 `_record_message`，但 `_record_message` 内部又对 `user` 调 `_display_name()`，把昵称当 openid 再次解析。
+
+### 变更内容
+- **拆分解析函数为三层**，按调用线程选择：
+  - `_resolve_qq_nickname()`：快速同步版（手动映射 > 缓存 > 截断展示），任何线程可安全调用，永不阻塞
+  - `_resolve_qq_nickname_async()` / `_display_name_async()`：异步完整版（含 API 查询），事件循环内 `await` 调用，不阻塞
+  - `_display_name_sync()`：worker 线程版（含 API 查询，`run_coroutine_threadsafe` + 5s 超时等待）
+- **修复二次解析**：`_record_message` 不再对 `user` 调 `_display_name`，直接存调用方传入的展示名
+- **事件回调统一改造**：8 个 botpy 事件回调（进群/退群/好友增删/主动消息开关）和 2 个消息回调统一改用 `await _display_name_async`
+- **`_handle_qq_message`**：worker 线程改用 `_display_name_sync`（可查 API 并回填缓存）
+- **server.py**：企微侧 `get_user_name` 降级改为截断展示（`userid[:8] + "..." + userid[-6:]`），避免面板显示过长的原始 ID
+
+### 验证
+- 本地逻辑测试 7 项全部通过：异步解析、缓存回填、手动映射、worker 同步解析、记录不二次解析、未知降级截断、事件循环快速版
+- 语法检查通过
 
 ---
 
