@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'bc79b871-5f23-4b35-9d53-faf79e61120a'
-  PropagateID: 'bc79b871-5f23-4b35-9d53-faf79e61120a'
-  ReservedCode1: '127e1b4c-d27f-412d-8287-46e1814709a5'
-  ReservedCode2: '127e1b4c-d27f-412d-8287-46e1814709a5'
+  ProduceID: '157790aa-0a64-4e16-bc2c-ec75fcc6459e'
+  PropagateID: '157790aa-0a64-4e16-bc2c-ec75fcc6459e'
+  ReservedCode1: 'ae390378-1753-4883-bbc3-ad4f69b3fbf7'
+  ReservedCode2: 'ae390378-1753-4883-bbc3-ad4f69b3fbf7'
 ---
 
 # 更新日志
@@ -15,6 +15,19 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.8.3 (2026-08-18)
+
+**调整：TeleAgent 会话标题格式改为「机器人 | 群聊/私聊 | 用户 | 时间」**。
+
+### 变更内容
+- **企微侧**（server.py）：`process_and_reply` 新增 `chat_type` 参数（'group'/'single'），6 个消息处理函数（文字/图片/文件/语音/视频/图文混排）均把企微消息的 `chattype` 传入；会话标题由 `姓名 | 企微机器人 | 时间` 改为 `企微机器人 | 群聊/私聊 | 姓名 | 时间`
+- **QQ 侧**（qq_official_adapter.py）：`_handle_qq_message` 会话标题由 `姓名 | QQ机器人 | 时间` 改为 `QQ机器人 | 群聊/私聊 | 姓名 | 时间`（复用现有 `is_group` 判断）
+
+### 效果
+TeleAgent 会话列表标题现在一眼能看出：哪个机器人、群里还是私聊、谁发的、几点发的。
 
 ---
 

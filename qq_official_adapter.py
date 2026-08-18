@@ -1157,7 +1157,9 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
         # 构建 prompt（复用 server.build_prompt）
         prompt = server.build_prompt(file_paths, text_content, user_name)
         time_str = time.strftime("%H:%M")
-        session_title = f"{user_name} | QQ机器人 | {time_str}"
+        # 会话标题：机器人 | 群聊/私聊 | 姓名 | 时间
+        scene = "群聊" if is_group else "私聊"
+        session_title = f"QQ机器人 | {scene} | {user_name} | {time_str}"
 
         logger.info(f"[QQ] 调用TeleAgent: 来源={from_user} (显示={user_name}), 有文件={bool(file_paths)}")
 

@@ -746,9 +746,10 @@ def post_process_actions(ws, req_id, stream_id, ai_reply, user_name, from_user):
             logger.error(f"发送后处理通知失败: {e}")
 
 
-def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user):
+def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user, chat_type="group"):
     """异步处理：调用TeleAgent代理 -> 回复群里（含文件发送）
     file_paths: [(path, type), type为'image'/'file'/'voice'/'video']
+    chat_type: 'group'=群聊 / 'single'=私聊（用于会话标题展示）
     企微stream消息有10分钟超时限制，处理过程中每8分钟发一次心跳保活
     """
     user_name = get_user_name(from_user)
@@ -756,9 +757,10 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     # 构建prompt：文件路径+文字原文
     prompt = build_prompt(file_paths, text_content, user_name)
 
-    # 会话标题：姓名 | 企微机器人 | 时间
+    # 会话标题：机器人 | 群聊/私聊 | 姓名 | 时间
+    scene = "群聊" if chat_type == "group" else "私聊"
     time_str = time.strftime("%H:%M")
-    session_title = f"{user_name} | 企微机器人 | {time_str}"
+    session_title = f"企微机器人 | {scene} | {user_name} | {time_str}"
 
     has_files = bool(file_paths)
     logger.info(f"开始调用TeleAgent, 调用人={user_name}, 有文件={has_files}")
@@ -1303,7 +1305,7 @@ def handle_text_message(ws, msg, req_id):
     # 异步调用TeleAgent
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [], text_content, from_user),
+        args=(ws, req_id, stream_id, [], text_content, from_user, chattype),
         daemon=True
     )
     thread.start()
@@ -1355,7 +1357,7 @@ def handle_image_message(ws, msg, req_id):
     # 3. 异步调用TeleAgent代理（含看图+配餐分析）
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [(image_path, 'image')], "", from_user),
+        args=(ws, req_id, stream_id, [(image_path, 'image')], "", from_user, chattype),
         daemon=True
     )
     thread.start()
@@ -1395,7 +1397,7 @@ def handle_file_message(ws, msg, req_id):
     # 异步调用TeleAgent
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [(filepath, 'file')], "", from_user),
+        args=(ws, req_id, stream_id, [(filepath, 'file')], "", from_user, chattype),
         daemon=True
     )
     thread.start()
@@ -1437,7 +1439,7 @@ def handle_voice_message(ws, msg, req_id):
     # 异步调用TeleAgent
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [(filepath, 'voice')], "", from_user),
+        args=(ws, req_id, stream_id, [(filepath, 'voice')], "", from_user, chattype),
         daemon=True
     )
     thread.start()
@@ -1478,7 +1480,7 @@ def handle_video_message(ws, msg, req_id):
     # 异步调用TeleAgent
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [(filepath, 'video')], "", from_user),
+        args=(ws, req_id, stream_id, [(filepath, 'video')], "", from_user, chattype),
         daemon=True
     )
     thread.start()
@@ -1595,7 +1597,7 @@ def handle_mixed_message(ws, msg, req_id):
     text_content = " ".join(text_parts) if text_parts else ""
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, file_paths, text_content, from_user),
+        args=(ws, req_id, stream_id, file_paths, text_content, from_user, chattype),
         daemon=True
     )
     thread.start()
