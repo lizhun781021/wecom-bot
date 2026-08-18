@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '58b62412-54d2-4c2b-8eb1-b83a67c78f88'
-  PropagateID: '58b62412-54d2-4c2b-8eb1-b83a67c78f88'
-  ReservedCode1: '075db902-76e4-4419-ad70-0f3ce61ef16b'
-  ReservedCode2: '075db902-76e4-4419-ad70-0f3ce61ef16b'
+  ProduceID: 'bc79b871-5f23-4b35-9d53-faf79e61120a'
+  PropagateID: 'bc79b871-5f23-4b35-9d53-faf79e61120a'
+  ReservedCode1: '127e1b4c-d27f-412d-8287-46e1814709a5'
+  ReservedCode2: '127e1b4c-d27f-412d-8287-46e1814709a5'
 ---
 
 # 更新日志
@@ -15,6 +15,19 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.8.2 (2026-08-18)
+
+**新增：面板「能力说明」Tab，展示 QQ 与企微双通道能力全景**。
+
+### 变更内容
+- dashboard.py 新增「能力说明」Tab（纯静态 HTML，无需数据加载）：
+  - **QQ 官方机器人卡片**：群聊 @ / 私聊 / 主动推送 / 配餐台账 / 指令，附群成员昵称权限提示（依赖 QQ 开放平台「获取群成员信息」接口，未开通显示截断 ID）
+  - **企微机器人卡片**：群聊 / 个人 / 群发（Markdown 卡片等）/ 事件 / 待办 / 文档，附通讯录姓名查询权限提示（需企微后台企业可信 IP 白名单）
+  - **通用能力**：AI 对话 / 场景技能 / 富媒体 / 消息记录 / 定时任务
+- 新增能力说明相关 CSS（cap-grid / cap-card / cap-item / cap-note 等），与现有暗色主题一致
 
 ---
 

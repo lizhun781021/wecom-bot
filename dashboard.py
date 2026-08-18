@@ -254,6 +254,23 @@ tr:hover { background: #162232; }
 .log-ERROR { color: #ef4444; }
 .log-WARNING { color: #fbbf24; }
 .log-DEBUG { color: #60a5fa; }
+/* 能力说明 */
+.cap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.cap-card { background: #1a2a3a; border: 1px solid #2a3a4a; border-radius: 12px; padding: 18px 20px; }
+.cap-card .cap-head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.cap-card .cap-title { font-size: 15px; font-weight: 600; }
+.cap-card .cap-sub { font-size: 12px; color: #8a9aaa; }
+.cap-qq .cap-head .cap-title { color: #34d399; }
+.cap-qq .cap-head .cap-icon { background: #1e3a2f; color: #34d399; }
+.cap-wecom .cap-head .cap-title { color: #60a5fa; }
+.cap-wecom .cap-head .cap-icon { background: #1e3a5f; color: #60a5fa; }
+.cap-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.cap-item { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px dashed #263646; font-size: 13px; }
+.cap-item:last-child { border-bottom: none; }
+.cap-item .cap-label { color: #00b4d8; min-width: 72px; flex-shrink: 0; font-weight: 500; }
+.cap-item .cap-desc { color: #c0c8d0; line-height: 1.5; }
+.cap-item .cap-desc b { color: #e0e0e0; }
+.cap-note { background: #162232; border-left: 3px solid #f59e0b; padding: 10px 14px; border-radius: 0 8px 8px 0; font-size: 12px; color: #c0c8d0; margin: 12px 0; line-height: 1.6; }
 .footer { text-align: center; padding: 20px; color: #4a5a6a; font-size: 12px; }
 .refresh-btn { background: #00b4d8; color: #fff; border: none; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .refresh-btn:hover { background: #0096c7; }
@@ -306,6 +323,7 @@ tr:hover { background: #162232; }
     <button class="tab-btn" data-tab="push" onclick="switchTab('push')">主动推送</button>
     <button class="tab-btn" data-tab="messages" onclick="switchTab('messages')">消息记录</button>
     <button class="tab-btn" data-tab="logs" onclick="switchTab('logs')">实时日志</button>
+    <button class="tab-btn" data-tab="caps" onclick="switchTab('caps')">能力说明</button>
   </div>
 
   <!-- 主动推送 -->
@@ -400,6 +418,59 @@ tr:hover { background: #162232; }
       <span><span class="auto-badge">5s 自动刷新</span> <button class="refresh-btn" onclick="loadLogs()">刷新</button></span>
     </div>
     <div class="log-box" id="log-box"></div>
+  </div>
+  </div>
+
+  <!-- 能力说明 -->
+  <div id="tab-caps" class="tab-panel">
+  <div class="cap-grid">
+
+    <!-- QQ 官方机器人 -->
+    <div class="cap-card cap-qq">
+      <div class="cap-head">
+        <div class="cap-icon">💬</div>
+        <div>
+          <div class="cap-title">QQ 官方机器人</div>
+          <div class="cap-sub">独立进程 qq_official_adapter.py · 端口 18506</div>
+        </div>
+      </div>
+      <div class="cap-item"><span class="cap-label">群聊 @</span><span class="cap-desc">群里 <b>@机器人</b> 即可对话、提问、查配餐方案、质检录音、日报等，AI 智能回复</span></div>
+      <div class="cap-item"><span class="cap-label">私聊</span><span class="cap-desc">单聊机器人生成内容，支持<b>文本 / 图片 / 文件（≤200MB）</b>，Markdown 排版</span></div>
+      <div class="cap-item"><span class="cap-label">主动推送</span><span class="cap-desc">面板可主动推送文本/图片/文件/视频/语音到 QQ；<b>群聊需最近 5 分钟内有 @</b> 才能被动下发</span></div>
+      <div class="cap-item"><span class="cap-label">配餐台账</span><span class="cap-desc">AI 回复识别配餐数据自动写入台账（MCP 智能表格）</span></div>
+      <div class="cap-item"><span class="cap-label">指令</span><span class="cap-desc"><b>/帮助</b> 查看全部指令（/配餐 /质检 /日报 等关键词指令直接回复）</span></div>
+      <div class="cap-note">⚠️ 群成员昵称显示依赖 QQ 开放平台「获取群成员信息」接口权限；未开通时显示截断 ID（如 E3AC7D1A...F07A347），可通过手动映射在 config.QQ_USER_MAP 中补全。</div>
+    </div>
+
+    <!-- 企微机器人 -->
+    <div class="cap-card cap-wecom">
+      <div class="cap-head">
+        <div class="cap-icon">🏢</div>
+        <div>
+          <div class="cap-title">企微机器人</div>
+          <div class="cap-sub">主服务 server.py · 端口 8505 面板</div>
+        </div>
+      </div>
+      <div class="cap-item"><span class="cap-label">群聊</span><span class="cap-desc">企微群 <b>@机器人</b> 对话，Webhook 回复，AI 智能应答</span></div>
+      <div class="cap-item"><span class="cap-label">个人</span><span class="cap-desc">应用消息<b>主动推送</b>到指定员工（userid），可发文本/图片</span></div>
+      <div class="cap-item"><span class="cap-label">群发</span><span class="cap-desc">Webhook 群发：文本 / <b>Markdown 卡片</b> / 图文 / 模板卡片 / 投票 / 按钮 / 语音</span></div>
+      <div class="cap-item"><span class="cap-label">事件</span><span class="cap-desc">进群 / 退群 / 好友增删 / 权限开关等管理事件实时记录到面板</span></div>
+      <div class="cap-item"><span class="cap-label">待办</span><span class="cap-desc"><b>创建 / 查询 / 更新 / 删除 / 改状态 / 搜索用户</b>，走 MCP 服务（已脱离 wecom-cli）</span></div>
+      <div class="cap-item"><span class="cap-label">文档</span><span class="cap-desc">MCP <b>智能表格 / 文档</b>创建，配餐台账自动写入</span></div>
+      <div class="cap-note">⚠ 成员姓名显示依赖企微通讯录 API（需在企微管理后台将当前出口 IP 加入「企业可信 IP」白名单）；未开通时显示截断 ID，可手动在 config.WECOM_USER_MAP 补全。</div>
+    </div>
+  </div>
+
+  <!-- 通用能力 -->
+  <div class="section">
+    <div class="section-header"><span class="section-title">通用能力</span><span class="badge">两通道共用</span></div>
+    <div style="padding: 16px 20px;">
+      <div class="cap-item"><span class="cap-label">AI 对话</span><span class="cap-desc">复用 TeleAgent 管线（8088 代理），支持<b>文字 / 图片理解 / 文件</b>，上下文会话记忆</span></div>
+      <div class="cap-item"><span class="cap-label">场景技能</span><span class="cap-desc">电信业务咨询、套餐比算、<b>配餐方案生成</b>、质检录音分析、收入数据看板、日报/周报生成</span></div>
+      <div class="cap-item"><span class="cap-label">富媒体</span><span class="cap-desc">QQ 支持图片/视频/语音/文件；企微支持图片/文件/语音合成</span></div>
+      <div class="cap-item"><span class="cap-label">消息记录</span><span class="cap-desc">企微 + QQ 双通道消息合并展示，实时状态（处理中/已回复/失败）</span></div>
+      <div class="cap-item"><span class="cap-label">定时任务</span><span class="cap-desc">Token 日报 / AI 新闻 / 邮件日报 / 短信日报 / 工作日志每日自动推送</span></div>
+    </div>
   </div>
   </div>
 
