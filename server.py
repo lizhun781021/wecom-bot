@@ -760,7 +760,7 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     # 会话标题：机器人 | 群聊/私聊 | 姓名 | 时间
     scene = "群聊" if chat_type == "group" else "私聊"
     time_str = time.strftime("%H:%M")
-    session_title = f"企微机器人 | {scene} | {user_name} | {time_str}"
+    session_title = f"企微 | {scene} | {user_name} | {time_str}"
 
     has_files = bool(file_paths)
     logger.info(f"开始调用TeleAgent, 调用人={user_name}, 有文件={has_files}")

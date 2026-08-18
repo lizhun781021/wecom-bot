@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '157790aa-0a64-4e16-bc2c-ec75fcc6459e'
-  PropagateID: '157790aa-0a64-4e16-bc2c-ec75fcc6459e'
-  ReservedCode1: 'ae390378-1753-4883-bbc3-ad4f69b3fbf7'
-  ReservedCode2: 'ae390378-1753-4883-bbc3-ad4f69b3fbf7'
+  ProduceID: '048f6df2-297a-4ddd-91ba-87786a817aa6'
+  PropagateID: '048f6df2-297a-4ddd-91ba-87786a817aa6'
+  ReservedCode1: '0d9adbe8-6710-4a7d-97cb-0bb6a19cf8e7'
+  ReservedCode2: '0d9adbe8-6710-4a7d-97cb-0bb6a19cf8e7'
 ---
 
 # 更新日志
@@ -15,6 +15,15 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.8.4 (2026-08-18)
+
+**调整：TeleAgent 会话标题去掉"机器人"三个字**。
+
+### 变更内容
+- 会话标题格式由 `企微机器人 | 群聊/私聊 | 用户 | 时间`、`QQ机器人 | 群聊/私聊 | 用户 | 时间` 缩短为 `企微 | 群聊/私聊 | 用户 | 时间`、`QQ | 群聊/私聊 | 用户 | 时间`（避免标题过长显示不全）
 
 ---
 
