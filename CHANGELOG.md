@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'd3f893b4-7d95-4109-88be-477b9b265801'
-  PropagateID: 'd3f893b4-7d95-4109-88be-477b9b265801'
-  ReservedCode1: '965fac78-4cdb-4ee4-a01c-359118a5e41e'
-  ReservedCode2: '965fac78-4cdb-4ee4-a01c-359118a5e41e'
+  ProduceID: 'ba59a860-1d6f-41a5-ac4b-36bef60bcddb'
+  PropagateID: 'ba59a860-1d6f-41a5-ac4b-36bef60bcddb'
+  ReservedCode1: 'a85b0ae4-f38f-4125-a628-5190e3955bf2'
+  ReservedCode2: 'a85b0ae4-f38f-4125-a628-5190e3955bf2'
 ---
 
 # 更新日志
@@ -15,6 +15,17 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.9.3 (2026-08-19)
+
+**调整：技能脱敏处理，准备上架技能广场**。
+
+### 变更内容
+- SKILL.md 脱敏：个人路径→`<your_project_dir>`、userid→`<userid>`、launchd服务名→`com.<your_name>`、人名→通用示例
+- 重新通过 quick_validate 验证 + teleai_claw_scan 安全扫描（0 高风险）
+- 重新注册到 super-agent，同步技能文件到项目目录备份
 
 ---
 
