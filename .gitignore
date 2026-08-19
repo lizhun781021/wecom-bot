@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 venv/
 *.log
+*.log.*
 .temp/
 
 # Images (用户隐私)
