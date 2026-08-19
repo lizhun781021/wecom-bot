@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '048f6df2-297a-4ddd-91ba-87786a817aa6'
-  PropagateID: '048f6df2-297a-4ddd-91ba-87786a817aa6'
-  ReservedCode1: '0d9adbe8-6710-4a7d-97cb-0bb6a19cf8e7'
-  ReservedCode2: '0d9adbe8-6710-4a7d-97cb-0bb6a19cf8e7'
+  ProduceID: '29f55a19-df63-448a-a40d-64f6ebe13455'
+  PropagateID: '29f55a19-df63-448a-a40d-64f6ebe13455'
+  ReservedCode1: '06ca1b76-1dbd-4a34-86d6-376ea92483c1'
+  ReservedCode2: '06ca1b76-1dbd-4a34-86d6-376ea92483c1'
 ---
 
 # 更新日志
@@ -15,6 +15,27 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.9.0 (2026-08-19)
+
+**重大调整：会话按用户/群固定，对话上下文可延续**。
+
+### 背景
+原会话标题带时间戳（如 `企微 | 群聊 | 李准 | 14:02`），每次消息都生成新标题 → TeleAgent 每次打开新会话，交互式对话被拆散到不同会话。
+
+### 变更内容
+- **企微侧**（server.py）：
+  - `process_and_reply` 新增 `chat_id` 参数；6 个消息处理函数（文字/图片/文件/语音/视频/图文混排）从企微消息体读取 `chatid` 传入
+  - 会话标题改为稳定标识：私聊 `企微|私聊|userid`、群聊 `企微|群聊|chatid`（同一用户/同一群固定一个会话，群与私聊互不干扰）
+- **QQ 侧**（qq_official_adapter.py）：`_handle_qq_message` 会话标题改为：私聊 `QQ|私聊|openid`、群聊 `QQ|群聊|group_openid`
+- **8088 代理端**（openai-proxy v1.6.0）：`/v1/chat/completions` 支持按 `session_title` 复用已存在会话（同名同目录），不再无条件新建
+
+### 效果
+- 私聊同一个用户 → 固定一个会话，多轮对话上下文连续
+- 群聊同一个群 → 固定一个会话（同群成员共享群聊上下文），与私聊完全隔离
+- 一句话不再开一个新会话
 
 ---
 

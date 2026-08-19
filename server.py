@@ -746,10 +746,11 @@ def post_process_actions(ws, req_id, stream_id, ai_reply, user_name, from_user):
             logger.error(f"发送后处理通知失败: {e}")
 
 
-def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user, chat_type="group"):
+def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user, chat_type="group", chat_id=""):
     """异步处理：调用TeleAgent代理 -> 回复群里（含文件发送）
     file_paths: [(path, type), type为'image'/'file'/'voice'/'video']
-    chat_type: 'group'=群聊 / 'single'=私聊（用于会话标题展示）
+    chat_type: 'group'=群聊 / 'single'=私聊
+    chat_id: 群聊时的群ID（chatid），用于会话标题分组
     企微stream消息有10分钟超时限制，处理过程中每8分钟发一次心跳保活
     """
     user_name = get_user_name(from_user)
@@ -757,10 +758,13 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     # 构建prompt：文件路径+文字原文
     prompt = build_prompt(file_paths, text_content, user_name)
 
-    # 会话标题：机器人 | 群聊/私聊 | 姓名 | 时间
-    scene = "群聊" if chat_type == "group" else "私聊"
-    time_str = time.strftime("%H:%M")
-    session_title = f"企微 | {scene} | {user_name} | {time_str}"
+    # 会话标题：稳定标识，同一用户/同一群固定一个会话（不再带时间戳，避免一句话开一个会话）
+    # 私聊：按 userid 区分；群聊：按 chatid 区分（同群共享一个会话，群与私聊互不干扰）
+    if chat_type == "group":
+        session_key = chat_id or from_user
+        session_title = f"企微|群聊|{session_key}"
+    else:
+        session_title = f"企微|私聊|{from_user}"
 
     has_files = bool(file_paths)
     logger.info(f"开始调用TeleAgent, 调用人={user_name}, 有文件={has_files}")
@@ -1285,6 +1289,7 @@ def handle_text_message(ws, msg, req_id):
     from_user = body.get("from", {}).get("userid", "unknown")
     text_content = body.get("text", {}).get("content", "")
     chattype = body.get("chattype", "single")
+    chat_id = body.get("chatid", "")
 
     logger.info(f"收到文字消息: from={from_user}, chattype={chattype}, content={text_content[:50]}")
     user_name = get_user_name(from_user)
@@ -1305,7 +1310,7 @@ def handle_text_message(ws, msg, req_id):
     # 异步调用TeleAgent
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [], text_content, from_user, chattype),
+        args=(ws, req_id, stream_id, [], text_content, from_user, chattype, chat_id),
         daemon=True
     )
     thread.start()
@@ -1316,6 +1321,7 @@ def handle_image_message(ws, msg, req_id):
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
     chattype = body.get("chattype", "single")
+    chat_id = body.get("chatid", "")
     image_info = body.get("image", {})
     url = image_info.get("url", "")
     aeskey = image_info.get("aeskey", "")
@@ -1357,7 +1363,7 @@ def handle_image_message(ws, msg, req_id):
     # 3. 异步调用TeleAgent代理（含看图+配餐分析）
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [(image_path, 'image')], "", from_user, chattype),
+        args=(ws, req_id, stream_id, [(image_path, 'image')], "", from_user, chattype, chat_id),
         daemon=True
     )
     thread.start()
@@ -1368,6 +1374,7 @@ def handle_file_message(ws, msg, req_id):
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
     chattype = body.get("chattype", "single")
+    chat_id = body.get("chatid", "")
     file_info = body.get("file", {})
     url = file_info.get("url", "")
     aeskey = file_info.get("aeskey", "")
@@ -1397,7 +1404,7 @@ def handle_file_message(ws, msg, req_id):
     # 异步调用TeleAgent
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [(filepath, 'file')], "", from_user, chattype),
+        args=(ws, req_id, stream_id, [(filepath, 'file')], "", from_user, chattype, chat_id),
         daemon=True
     )
     thread.start()
@@ -1408,6 +1415,7 @@ def handle_voice_message(ws, msg, req_id):
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
     chattype = body.get("chattype", "single")
+    chat_id = body.get("chatid", "")
     voice_info = body.get("voice", {})
     url = voice_info.get("url", "")
     aeskey = voice_info.get("aeskey", "")
@@ -1439,7 +1447,7 @@ def handle_voice_message(ws, msg, req_id):
     # 异步调用TeleAgent
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [(filepath, 'voice')], "", from_user, chattype),
+        args=(ws, req_id, stream_id, [(filepath, 'voice')], "", from_user, chattype, chat_id),
         daemon=True
     )
     thread.start()
@@ -1450,6 +1458,7 @@ def handle_video_message(ws, msg, req_id):
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
     chattype = body.get("chattype", "single")
+    chat_id = body.get("chatid", "")
     video_info = body.get("video", {})
     url = video_info.get("url", "")
     aeskey = video_info.get("aeskey", "")
@@ -1480,7 +1489,7 @@ def handle_video_message(ws, msg, req_id):
     # 异步调用TeleAgent
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, [(filepath, 'video')], "", from_user, chattype),
+        args=(ws, req_id, stream_id, [(filepath, 'video')], "", from_user, chattype, chat_id),
         daemon=True
     )
     thread.start()
@@ -1491,6 +1500,7 @@ def handle_mixed_message(ws, msg, req_id):
     body = msg.get("body", {})
     from_user = body.get("from", {}).get("userid", "unknown")
     chattype = body.get("chattype", "single")
+    chat_id = body.get("chatid", "")
     mixed_info = body.get("mixed", {})
     msg_items = mixed_info.get("msg_item", [])
 
@@ -1597,7 +1607,7 @@ def handle_mixed_message(ws, msg, req_id):
     text_content = " ".join(text_parts) if text_parts else ""
     thread = threading.Thread(
         target=process_and_reply,
-        args=(ws, req_id, stream_id, file_paths, text_content, from_user, chattype),
+        args=(ws, req_id, stream_id, file_paths, text_content, from_user, chattype, chat_id),
         daemon=True
     )
     thread.start()
