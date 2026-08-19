@@ -466,6 +466,7 @@ tr:hover { background: #162232; }
     <div class="section-header"><span class="section-title">通用能力</span><span class="badge">两通道共用</span></div>
     <div style="padding: 16px 20px;">
       <div class="cap-item"><span class="cap-label">AI 对话</span><span class="cap-desc">复用 TeleAgent 管线（8088 代理），支持<b>文字 / 图片理解 / 文件</b>，上下文会话记忆</span></div>
+      <div class="cap-item"><span class="cap-label">会话分组</span><span class="cap-desc">同一用户私聊 = 一个会话，同一群 @ = 一个会话，<b>群与私聊互不干扰</b>；对话上下文自动延续，一句话不再开新会话</span></div>
       <div class="cap-item"><span class="cap-label">场景技能</span><span class="cap-desc">电信业务咨询、套餐比算、<b>配餐方案生成</b>、质检录音分析、收入数据看板、日报/周报生成</span></div>
       <div class="cap-item"><span class="cap-label">富媒体</span><span class="cap-desc">QQ 支持图片/视频/语音/文件；企微支持图片/文件/语音合成</span></div>
       <div class="cap-item"><span class="cap-label">消息记录</span><span class="cap-desc">企微 + QQ 双通道消息合并展示，实时状态（处理中/已回复/失败）</span></div>

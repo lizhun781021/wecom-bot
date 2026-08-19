@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '29f55a19-df63-448a-a40d-64f6ebe13455'
-  PropagateID: '29f55a19-df63-448a-a40d-64f6ebe13455'
-  ReservedCode1: '06ca1b76-1dbd-4a34-86d6-376ea92483c1'
-  ReservedCode2: '06ca1b76-1dbd-4a34-86d6-376ea92483c1'
+  ProduceID: 'dec39e77-4a7a-4299-9ad0-d8ae9b95e18b'
+  PropagateID: 'dec39e77-4a7a-4299-9ad0-d8ae9b95e18b'
+  ReservedCode1: '2117d10e-5367-46e4-bf12-02175c3133ce'
+  ReservedCode2: '2117d10e-5367-46e4-bf12-02175c3133ce'
 ---
 
 # 更新日志
@@ -15,6 +15,15 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.9.1 (2026-08-19)
+
+**调整：面板「能力说明」新增会话分组说明**。
+
+### 变更内容
+- 8505 管理面板「能力说明 → 通用能力」新增「会话分组」条目：同一用户私聊 = 一个会话、同一群 @ = 一个会话、群与私聊互不干扰，对话上下文自动延续
 
 ---
 
