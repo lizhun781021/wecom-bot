@@ -47,6 +47,8 @@ ZMX_LISTEN_PORT = getattr(config, "ZMX_LISTEN_PORT", 1011)
 ZMX_LISTEN_HOST = getattr(config, "ZMX_LISTEN_HOST", "0.0.0.0")
 # 入站回调密钥（可选，校验收紧用）
 ZMX_WEBHOOK_SECRET = getattr(config, "ZMX_WEBHOOK_SECRET", "")
+# 手机号 → 用户名映射（与企微 WECOM_USER_MAP / QQ_USER_MAP 同模式）
+ZMX_USER_MAP = getattr(config, "ZMX_USER_MAP", {})
 # 附件大小上限（30MB，与量子密信平台一致）
 ZMX_MAX_ATTACHMENT = 30 * 1024 * 1024
 # 单条文本长度上限
@@ -54,6 +56,95 @@ ZMX_TEXT_MAX = 5000
 # 出站限流：每个机器人 key 60 秒窗口最多 20 条
 ZMX_RATE_WINDOW = 60.0
 ZMX_RATE_MAX = 20
+
+# ========== 状态监控 ==========
+ZMX_STATUS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zmx_status.json')
+ZMX_MESSAGES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zmx_messages.json')
+
+# 状态字典（供 dashboard 读取）
+ZMX_STATUS = {
+    "running": False,
+    "listening": False,
+    "last_message_at": "",
+    "last_error": "",
+    "total_received": 0,
+    "total_replied": 0,
+    "total_errors": 0,
+    "total_attachments": 0,
+}
+ZMX_STATUS_LOCK = threading.Lock()
+
+# 会话记录（内存，最多 100 个）
+ZMX_SESSION = {"group": {}, "user": {}}
+ZMX_SESSION_LOCK = threading.Lock()
+
+# 消息记录（内存，最多 100 条）
+ZMX_MESSAGE_RECORDS = []
+ZMX_MESSAGE_RECORDS_LOCK = threading.Lock()
+MAX_ZMX_MESSAGE_RECORDS = 100
+
+
+def _persist_zmx_status():
+    """把状态+会话写入 zmx_status.json，供 dashboard（独立进程）读取"""
+    try:
+        with ZMX_STATUS_LOCK:
+            status = dict(ZMX_STATUS)
+        with ZMX_SESSION_LOCK:
+            session = {
+                "group": dict(ZMX_SESSION.get("group", {})),
+                "user": dict(ZMX_SESSION.get("user", {})),
+            }
+        payload = {
+            "status": status,
+            "session": session,
+            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        with open(ZMX_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"量子密信状态落盘失败: {e}")
+
+
+def _update_zmx_status(**kwargs):
+    """更新量子密信状态"""
+    with ZMX_STATUS_LOCK:
+        ZMX_STATUS.update(kwargs)
+    _persist_zmx_status()
+
+
+def _remember_zmx_session(kind: str, identifier: str):
+    """记录最近活跃会话（内存，最多保留 100 个），并同步落盘"""
+    with ZMX_SESSION_LOCK:
+        s = ZMX_SESSION.setdefault(kind, {})
+        s[identifier] = time.time()
+        if len(s) > 100:
+            for k in sorted(s, key=s.get)[: len(s) - 100]:
+                s.pop(k, None)
+    _persist_zmx_status()
+
+
+def _add_zmx_message_record(msg_type, user, preview, status="处理中", scene="group"):
+    """添加一条消息记录"""
+    with ZMX_MESSAGE_RECORDS_LOCK:
+        ZMX_MESSAGE_RECORDS.insert(0, {
+            "time": time.strftime("%H:%M:%S"),
+            "full_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "type": msg_type,
+            "user": user,
+            "preview": preview[:80] if preview else "",
+            "status": status,
+            "scene": scene
+        })
+        if len(ZMX_MESSAGE_RECORDS) > MAX_ZMX_MESSAGE_RECORDS:
+            del ZMX_MESSAGE_RECORDS[MAX_ZMX_MESSAGE_RECORDS:]
+    # 同步到文件（供 dashboard 读取）
+    try:
+        with ZMX_MESSAGE_RECORDS_LOCK:
+            records = list(ZMX_MESSAGE_RECORDS)
+        with open(ZMX_MESSAGES_FILE, "w", encoding="utf-8") as f:
+            json.dump(records, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 # ========== 出站限流状态 ==========
 _rate_lock = threading.Lock()
@@ -250,7 +341,7 @@ def zmx_upload_and_send(file_path: str, group_id: str = "", phone: str = "", as_
 # ========== 入站回调 HTTP 服务 ==========
 
 class ZMXWebhookHandler(BaseHTTPRequestHandler):
-    """量子密信平台回调入口：POST /webhook 接收 @机器人 消息。"""
+    """量子密信平台回调入口：POST /webhook 接收 @机器人 消息；POST /push 处理面板主动推送。"""
 
     def do_POST(self):
         try:
@@ -259,6 +350,11 @@ class ZMXWebhookHandler(BaseHTTPRequestHandler):
             data = json.loads(body.decode("utf-8")) if body else {}
         except Exception as e:
             self._reply(400, {"status": "error", "message": f"bad body: {e}"})
+            return
+
+        # 处理面板主动推送请求
+        if self.path == '/push':
+            self._handle_push(data)
             return
 
         # 可选密钥校验
@@ -299,6 +395,75 @@ class ZMXWebhookHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _handle_push(self, data):
+        """处理面板主动推送请求"""
+        try:
+            target = data.get("target", "group")
+            group_id = data.get("groupid", "")
+            content = data.get("content", "")
+            fmt = data.get("format", "text")
+            image_data = data.get("image", "")
+            image_name = data.get("imagename", "image.png")
+            caption = data.get("caption", "")
+            
+            if target != "group":
+                self._reply(400, {"success": False, "error": "量子密信仅支持群聊推送"})
+                return
+            
+            if not group_id:
+                self._reply(400, {"success": False, "error": "群ID不能为空"})
+                return
+            
+            # 发送文本
+            if fmt == "text":
+                if not content:
+                    self._reply(400, {"success": False, "error": "消息内容不能为空"})
+                    return
+                success = zmx_send_text(content, group_id)
+                if success:
+                    self._reply(200, {"success": True, "detail": "量子密信文本推送成功"})
+                else:
+                    self._reply(500, {"success": False, "error": "量子密信文本发送失败"})
+            
+            # 发送图片
+            elif fmt == "image":
+                if not image_data:
+                    self._reply(400, {"success": False, "error": "图片数据不能为空"})
+                    return
+                
+                # 保存临时图片文件
+                import base64
+                temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp_uploads')
+                os.makedirs(temp_dir, exist_ok=True)
+                ext = os.path.splitext(image_name)[1].lower() or '.png'
+                temp_path = os.path.join(temp_dir, f"zmx_push_{int(time.time()*1000)}{ext}")
+                
+                try:
+                    with open(temp_path, 'wb') as f:
+                        f.write(base64.b64decode(image_data))
+                    
+                    # 上传并发送图片
+                    file_id = zmx_upload_and_send(temp_path, group_id, as_image=True)
+                    if file_id:
+                        self._reply(200, {"success": True, "detail": f"量子密信图片推送成功 (fileId={file_id})"})
+                    else:
+                        self._reply(500, {"success": False, "error": "量子密信图片上传/发送失败"})
+                except Exception as e:
+                    self._reply(500, {"success": False, "error": f"图片处理失败: {str(e)}"})
+                finally:
+                    # 清理临时文件
+                    try:
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+                    except Exception:
+                        pass
+            
+            else:
+                self._reply(400, {"success": False, "error": f"不支持的格式: {fmt}"})
+                
+        except Exception as e:
+            self._reply(500, {"success": False, "error": f"推送异常: {str(e)}"})
+
     def log_message(self, fmt, *args):
         logger.info(f"[zmx-webhook] {fmt % args}")
 
@@ -307,13 +472,21 @@ def _process_zmx_message(content: str, group_id: str, phone: str, callback_url: 
     """量子密信消息处理：调用 8088 AI 管线 -> 回复群里（复用 server 管线）。
     callback_url 是平台回调携带的群回复地址（多群隔离，必须用它回复）。"""
     try:
-        # 量子密信用户即手机号，直接用它作显示名（不查企微通讯录，避免触发企微API）
-        user_name = phone
+        # 手机号映射为用户名（映射不到则用手机号）
+        user_name = ZMX_USER_MAP.get(phone, phone)
+        
+        # 记录收到消息
+        _update_zmx_status(total_received=ZMX_STATUS.get("total_received", 0) + 1,
+                          last_message_at=time.strftime("%Y-%m-%d %H:%M:%S"))
+        _remember_zmx_session("group", group_id)
+        _add_zmx_message_record("text", user_name, content, "处理中", "group")
+        
         prompt = server.build_prompt([], content, user_name)
-        session_title = server.get_session_title("量子密信", "群聊", group_id or phone, group_id or phone)
+        session_title = server.get_session_title("密信", "群聊", user_name, group_id or phone)
         result = server.call_teleagent(prompt, timeout=1800, session_title=session_title)
         if not result:
             zmx_send_text("抱歉，处理超时或出错了，请稍后重试。", group_id, phone, callback_url)
+            _update_zmx_status(total_errors=ZMX_STATUS.get("total_errors", 0) + 1)
             return
 
         file_paths = server.extract_file_paths(result)
@@ -325,12 +498,21 @@ def _process_zmx_message(content: str, group_id: str, phone: str, callback_url: 
                 is_img = Path(fp).suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp")
                 try:
                     zmx_upload_and_send(fp, group_id, phone, as_image=is_img, callback_url=callback_url)
+                    _update_zmx_status(total_attachments=ZMX_STATUS.get("total_attachments", 0) + 1)
                 except Exception as e:
                     logger.error(f"量子附件发送失败 {fp}: {e}")
         else:
             zmx_send_markdown(result, group_id, phone, callback_url)
+        
+        _update_zmx_status(total_replied=ZMX_STATUS.get("total_replied", 0) + 1)
+        # 更新消息记录状态为已回复
+        with ZMX_MESSAGE_RECORDS_LOCK:
+            if ZMX_MESSAGE_RECORDS:
+                ZMX_MESSAGE_RECORDS[0]["status"] = "已回复"
     except Exception as e:
         logger.error(f"量子密信处理异常: {e}")
+        _update_zmx_status(total_errors=ZMX_STATUS.get("total_errors", 0) + 1,
+                          last_error=str(e)[:200])
         try:
             zmx_send_markdown("⚠️ 抱歉，处理您的请求时出现异常，请稍后重试。", group_id, phone, callback_url)
         except Exception:
@@ -344,8 +526,10 @@ def start_zmx_server():
         return
     try:
         srv = ThreadingHTTPServer((ZMX_LISTEN_HOST, ZMX_LISTEN_PORT), ZMXWebhookHandler)
+        _update_zmx_status(running=True, listening=True, last_error="")
     except OSError as e:
         logger.error(f"量子密信监听端口 {ZMX_LISTEN_PORT} 失败: {e}")
+        _update_zmx_status(running=False, listening=False, last_error=str(e)[:200])
         return
     logger.info(f"量子密信入站回调已启动: http://{ZMX_LISTEN_HOST}:{ZMX_LISTEN_PORT}/webhook")
     try:
@@ -354,6 +538,7 @@ def start_zmx_server():
         logger.info("量子密信回调服务已停止")
     finally:
         srv.server_close()
+        _update_zmx_status(running=False, listening=False)
 
 
 def main():

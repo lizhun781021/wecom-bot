@@ -1960,6 +1960,21 @@ if __name__ == '__main__':
     dashboard_thread.start()
     logger.info(f"Dashboard 管理面板已启动（端口 {DASHBOARD_PORT}）")
 
+    # 启动量子密信适配器（后台线程）
+    try:
+        import zmx_adapter
+        if getattr(config, "ZMX_ENABLED", True):
+            zmx_thread = threading.Thread(
+                target=zmx_adapter.start_zmx_server,
+                daemon=True
+            )
+            zmx_thread.start()
+            logger.info(f"量子密信适配器已启动（端口 {getattr(config, 'ZMX_LISTEN_PORT', 1011)}）")
+        else:
+            logger.info("量子密信适配器未启用（ZMX_ENABLED=False）")
+    except Exception as e:
+        logger.error(f"启动量子密信适配器失败: {e}")
+
     # 加载本地姓名缓存
     _load_name_cache()
 

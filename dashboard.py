@@ -21,6 +21,8 @@ LOG_FILE = os.path.join(PROJECT_DIR, 'wecom-bot.log')
 QQ_STATUS_FILE = os.path.join(PROJECT_DIR, 'qq_status.json')
 QQ_LOG_FILE = os.path.join(PROJECT_DIR, 'qq-adapter-app.log')
 QQ_PUSH_PORT = 18506  # QQ 适配器内部推送端点（与 qq_official_adapter.py 保持一致）
+ZMX_STATUS_FILE = os.path.join(PROJECT_DIR, 'zmx_status.json')
+ZMX_MESSAGES_FILE = os.path.join(PROJECT_DIR, 'zmx_messages.json')
 
 # ========== 共享状态（由 server.py 写入，dashboard 读取）==========
 # 消息记录列表，每条: {"time": "10:30:45", "type": "text/image/mixed", "user": "李准", "preview": "...", "status": "处理中/已回复/失败"}
@@ -153,13 +155,55 @@ def get_qq_status():
         return default
 
 
+def get_zmx_status():
+    """读取量子密信适配器状态（跨进程，从 zmx_status.json 读取）"""
+    default = {
+        "running": False,
+        "listening": False,
+        "last_message_at": "",
+        "last_error": "",
+        "total_received": 0,
+        "total_replied": 0,
+        "total_errors": 0,
+        "total_attachments": 0,
+        "updated_at": "",
+        "session": {"group": {}, "user": {}},
+    }
+    try:
+        if not os.path.exists(ZMX_STATUS_FILE):
+            return default
+        with open(ZMX_STATUS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        result = dict(default)
+        result.update(data.get("status", {}))
+        result["session"] = data.get("session", {"group": {}, "user": {}})
+        result["updated_at"] = data.get("updated_at", "")
+        return result
+    except Exception:
+        return default
+
+
+def get_zmx_messages(n=50):
+    """获取量子密信最近N条消息记录"""
+    try:
+        if not os.path.exists(ZMX_MESSAGES_FILE):
+            return []
+        with open(ZMX_MESSAGES_FILE, "r", encoding="utf-8") as f:
+            records = json.load(f)
+        return records[:n]
+    except Exception:
+        return []
+
+
 def get_recent_logs(n=50):
-    """获取最近N行日志（内存 + QQ 适配器日志文件）"""
+    """获取最近N行日志（内存 + QQ 适配器日志文件 + 量子密信适配器日志文件）"""
     with RECENT_LOGS_LOCK:
         lines = list(reversed(RECENT_LOGS[-n:]))
     # 合并 QQ 适配器日志文件尾部（独立进程，通过文件共享）
     qq_lines = _read_qq_log_tail(n)
-    merged = qq_lines + lines
+    # 合并量子密信适配器日志文件尾部
+    zmx_lines = _read_zmx_log_tail(n)
+    merged = zmx_lines + qq_lines + lines
     return merged[-n:]
 
 
@@ -176,8 +220,27 @@ def _read_qq_log_tail(n=30):
         return []
 
 
+def _read_zmx_log_tail(n=30):
+    """读取量子密信适配器日志文件末尾 N 行（带 [ZMX] 前缀便于区分）"""
+    zmx_log_file = os.path.join(PROJECT_DIR, 'zmx-adapter.log')
+    try:
+        if not os.path.exists(zmx_log_file):
+            return []
+        with open(zmx_log_file, 'r', encoding='utf-8') as f:
+            all_lines = f.readlines()
+        tail = all_lines[-n:]
+        result = []
+        for ln in tail:
+            if ln.strip():
+                clean_line = ln.rstrip('\n')
+                result.append(f"[ZMX] {clean_line}")
+        return result
+    except Exception:
+        return []
+
+
 def get_message_records(n=50):
-    """获取最近N条消息记录（企微内存记录 + QQ 落盘记录合并，按时间倒序）"""
+    """获取最近N条消息记录（企微内存记录 + QQ 落盘记录 + 量子密信落盘记录合并，按时间倒序）"""
     # QQ 消息来自独立进程（qq_official_adapter.py），落盘到 qq_messages.json
     qq_records = []
     qq_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'qq_messages.json')
@@ -187,8 +250,21 @@ def get_message_records(n=50):
                 qq_records = json.load(f)
     except Exception:
         qq_records = []
+    
+    # 量子密信消息来自独立进程（zmx_adapter.py），落盘到 zmx_messages.json
+    zmx_records = []
+    try:
+        if os.path.exists(ZMX_MESSAGES_FILE):
+            with open(ZMX_MESSAGES_FILE, 'r', encoding='utf-8') as f:
+                zmx_records = json.load(f)
+            # 给量子密信消息添加来源标记
+            for rec in zmx_records:
+                rec['source'] = 'zmx'
+    except Exception:
+        zmx_records = []
+    
     with MESSAGE_RECORDS_LOCK:
-        merged = qq_records + MESSAGE_RECORDS
+        merged = qq_records + zmx_records + MESSAGE_RECORDS
     # 排序：优先用完整时间（YYYY-MM-DD HH:MM:SS），旧数据只有 HH:MM:SS 则补当天日期
     today = time.strftime("%Y-%m-%d")
     def _sort_key(r):
@@ -207,7 +283,7 @@ HTML_PAGE = r'''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>企微+QQ机器人管理面板</title>
+<title>企微+QQ+量子密信机器人管理面板</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body { font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; background: #0f1923; color: #e0e0e0; min-height: 100vh; }
@@ -243,6 +319,7 @@ tr:hover { background: #162232; }
 .tag-video { background: #3b1e1e; color: #f87171; }
 .tag-event { background: #3b301e; color: #fbbf24; }
 .tag-qq { background: #1e3a2f; color: #34d399; }
+.tag-zmx { background: #2a1e3f; color: #a78bfa; }
 .tag-group { background: #1e3a5f; color: #60a5fa; }
 .tag-single { background: #3b1e3f; color: #c084fc; }
 .status-ok { color: #4ade80; }
@@ -264,6 +341,8 @@ tr:hover { background: #162232; }
 .cap-qq .cap-head .cap-icon { background: #1e3a2f; color: #34d399; }
 .cap-wecom .cap-head .cap-title { color: #60a5fa; }
 .cap-wecom .cap-head .cap-icon { background: #1e3a5f; color: #60a5fa; }
+.cap-zmx .cap-head .cap-title { color: #a78bfa; }
+.cap-zmx .cap-head .cap-icon { background: #2a1e3f; color: #a78bfa; }
 .cap-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
 .cap-item { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px dashed #263646; font-size: 13px; }
 .cap-item:last-child { border-bottom: none; }
@@ -293,7 +372,7 @@ tr:hover { background: #162232; }
 </head>
 <body>
 <div class="header">
-  <h1><span id="dot" class="status-dot status-offline"></span>企微+QQ机器人管理面板</h1>
+  <h1><span id="dot" class="status-dot status-offline"></span>企微+QQ+量子密信机器人管理面板</h1>
 </div>
 <div class="container">
   <!-- 状态卡片：企微通道 -->
@@ -316,6 +395,17 @@ tr:hover { background: #162232; }
     <div class="card"><div class="card-label">最后消息</div><div class="card-value blue" id="q-last">-</div></div>
     <div class="card"><div class="card-label">最近群会话</div><div class="card-value yellow" id="q-groups">0</div></div>
     <div class="card"><div class="card-label">最近单聊会话</div><div class="card-value yellow" id="q-users">0</div></div>
+  </div>
+
+  <!-- 状态卡片：量子密信通道 -->
+  <div class="section-title" style="margin-top:4px;padding:0 0 8px 0;"><span class="section-title">量子密信通道</span></div>
+  <div class="grid" id="zmxStatusGrid">
+    <div class="card"><div class="card-label">监听状态</div><div class="card-value" id="z-conn">离线</div></div>
+    <div class="card"><div class="card-label">收到消息</div><div class="card-value green" id="z-msgs">0</div></div>
+    <div class="card"><div class="card-label">已回复</div><div class="card-value green" id="z-replies">0</div></div>
+    <div class="card"><div class="card-label">附件发送</div><div class="card-value yellow" id="z-attachments">0</div></div>
+    <div class="card"><div class="card-label">最后消息</div><div class="card-value blue" id="z-last">-</div></div>
+    <div class="card"><div class="card-label">错误数</div><div class="card-value red" id="z-errors">0</div></div>
   </div>
 
   <!-- Tab 菜单 -->
@@ -341,14 +431,18 @@ tr:hover { background: #162232; }
           <option value="user">企微个人 (应用消息)</option>
           <option value="qq_group">QQ群 (官方机器人)</option>
           <option value="qq_user">QQ私聊 (官方机器人)</option>
+          <option value="zmx_group">量子密信群聊 (Webhook)</option>
         </select>
-        <input id="push-userid" type="text" placeholder="userid / QQ openid（个人/私聊模式填）" style="display:none;background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;margin-left:10px;width:280px;">
+        <input id="push-userid" type="text" placeholder="userid / QQ openid / 量子密信群ID（个人/私聊/量子密信模式填）" style="display:none;background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;margin-left:10px;width:280px;">
         <select id="push-qq-session" style="display:none;background:#0d1b2a;color:#e0e0e0;border:1px solid #2a3a4a;border-radius:6px;padding:6px 12px;font-size:13px;margin-left:10px;max-width:260px;" onchange="document.getElementById('push-userid').value=this.value">
           <option value="">-- 最近会话快捷选择 --</option>
         </select>
       </div>
       <div id="push-qq-tip" style="margin-bottom: 12px; display:none; font-size:12px; color:#f59e0b;">
         QQ 群聊已不支持主动推送，需群内最近 5 分钟内有 @ 机器人才能下发（文本/图片/文件均可）。若提示无有效 @，请先在群内 @ 一下机器人再重试。
+      </div>
+      <div id="push-zmx-tip" style="margin-bottom: 12px; display:none; font-size:12px; color:#a78bfa;">
+        量子密信群聊支持文本和图片推送，需填写群ID (groupId)。平台限制不支持文件/视频/语音等富媒体。
       </div>
       <div style="margin-bottom: 12px;">
         <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">消息格式</label>
@@ -459,23 +553,40 @@ tr:hover { background: #162232; }
       <div class="cap-item"><span class="cap-label">文档</span><span class="cap-desc">MCP <b>智能表格 / 文档</b>创建，配餐台账自动写入</span></div>
       <div class="cap-note">⚠ 成员姓名显示依赖企微通讯录 API（需在企微管理后台将当前出口 IP 加入「企业可信 IP」白名单）；未开通时显示截断 ID，可手动在 config.WECOM_USER_MAP 补全。</div>
     </div>
+
+    <!-- 量子密信机器人 -->
+    <div class="cap-card cap-zmx">
+      <div class="cap-head">
+        <div class="cap-icon">🔐</div>
+        <div>
+          <div class="cap-title">量子密信机器人</div>
+          <div class="cap-sub">独立进程 zmx_adapter.py · 端口 1011</div>
+        </div>
+      </div>
+      <div class="cap-item"><span class="cap-label">群聊 @</span><span class="cap-desc">量子密信群 <b>@机器人</b> 对话，AI 智能回复，支持文本消息</span></div>
+      <div class="cap-item"><span class="cap-label">主动推送</span><span class="cap-desc">面板可主动推送文本/图片到量子密信群；需填写群ID (groupId)</span></div>
+      <div class="cap-item"><span class="cap-label">会话隔离</span><span class="cap-desc">每个群独立会话，<b>群与群互不干扰</b>；回调携带专属回复地址</span></div>
+      <div class="cap-item"><span class="cap-label">用户名映射</span><span class="cap-desc">手机号自动映射为可读用户名（config.ZMX_USER_MAP），不查企微通讯录</span></div>
+      <div class="cap-item"><span class="cap-label">公网入口</span><span class="cap-desc">SSH反向隧道方案：Mac → 公网服务器:1011 → 量子密信平台回调</span></div>
+      <div class="cap-note">⚠️ 量子密信平台限制：仅支持文本消息回调，不支持图片/文件/语音等富媒体。主动推送支持文本和图片。</div>
+    </div>
   </div>
 
   <!-- 通用能力 -->
   <div class="section">
-    <div class="section-header"><span class="section-title">通用能力</span><span class="badge">两通道共用</span></div>
+    <div class="section-header"><span class="section-title">通用能力</span><span class="badge">三通道共用</span></div>
     <div style="padding: 16px 20px;">
       <div class="cap-item"><span class="cap-label">AI 对话</span><span class="cap-desc">复用 TeleAgent 管线（8088 代理），支持<b>文字 / 图片理解 / 文件</b>，上下文会话记忆</span></div>
       <div class="cap-item"><span class="cap-label">会话分组</span><span class="cap-desc">同一用户私聊 = 一个会话，同一群 @ = 一个会话，<b>群与私聊互不干扰</b>；对话上下文自动延续，一句话不再开新会话</span></div>
       <div class="cap-item"><span class="cap-label">场景技能</span><span class="cap-desc">电信业务咨询、套餐比算、<b>配餐方案生成</b>、质检录音分析、收入数据看板、日报/周报生成</span></div>
-      <div class="cap-item"><span class="cap-label">富媒体</span><span class="cap-desc">QQ 支持图片/视频/语音/文件；企微支持图片/文件/语音合成</span></div>
-      <div class="cap-item"><span class="cap-label">消息记录</span><span class="cap-desc">企微 + QQ 双通道消息合并展示，实时状态（处理中/已回复/失败）</span></div>
+      <div class="cap-item"><span class="cap-label">富媒体</span><span class="cap-desc">QQ 支持图片/视频/语音/文件；企微支持图片/文件/语音合成；量子密信支持图片</span></div>
+      <div class="cap-item"><span class="cap-label">消息记录</span><span class="cap-desc">企微 + QQ + 量子密信三通道消息合并展示，实时状态（处理中/已回复/失败）</span></div>
       <div class="cap-item"><span class="cap-label">定时任务</span><span class="cap-desc">Token 日报 / AI 新闻 / 邮件日报 / 短信日报 / 工作日志每日自动推送</span></div>
     </div>
   </div>
   </div>
 
-  <div class="footer">企微机器人 Web 管理面板 · 端口 8505</div>
+  <div class="footer">企微+QQ+量子密信机器人 Web 管理面板 · 端口 8505</div>
 </div>
 
 <script>
@@ -529,6 +640,24 @@ async function loadStatus() {
     document.getElementById('q-users').textContent = Object.keys(d.session.user || {}).length;
     if (d.last_error) console.warn('QQ:', d.last_error);
   } catch(e) { console.error(e); }
+  try {
+    const r = await fetch('/api/zmxstatus');
+    const d = await r.json();
+    const zconn = document.getElementById('z-conn');
+    if (d.listening) {
+      zconn.textContent = '监听中'; zconn.className = 'card-value green';
+    } else if (d.running) {
+      zconn.textContent = '运行中'; zconn.className = 'card-value yellow';
+    } else {
+      zconn.textContent = '离线'; zconn.className = 'card-value red';
+    }
+    document.getElementById('z-msgs').textContent = d.total_received;
+    document.getElementById('z-replies').textContent = d.total_replied;
+    document.getElementById('z-attachments').textContent = d.total_attachments;
+    document.getElementById('z-last').textContent = d.last_message_at || '-';
+    document.getElementById('z-errors').textContent = d.total_errors;
+    if (d.last_error) console.warn('ZMX:', d.last_error);
+  } catch(e) { console.error(e); }
 }
 async function loadMessages() {
   try {
@@ -544,10 +673,12 @@ async function loadMessages() {
       const ft = m.full_time || '';
       const date = ft ? ft.split(' ')[0] : (m.time ? '' : '-');
       const scene = m.scene === 'group' ? '群聊' : (m.scene === 'single' ? '私聊' : '-');
+      const sourceTag = m.source === 'qq' ? 'QQ' : (m.source === 'zmx' ? '密信' : '企微');
+      const sourceClass = m.source === 'qq' ? 'tag-qq' : (m.source === 'zmx' ? 'tag-zmx' : 'tag-text');
       return `<tr>
       <td>${date || '-'}</td>
       <td>${m.time}</td>
-      <td><span class="tag ${m.source === 'qq' ? 'tag-qq' : 'tag-text'}">${m.source === 'qq' ? 'QQ' : '企微'}</span></td>
+      <td><span class="tag ${sourceClass}">${sourceTag}</span></td>
       <td><span class="tag ${scene === '群聊' ? 'tag-group' : (scene === '私聊' ? 'tag-single' : '')}">${scene}</span></td>
       <td><span class="tag ${tagClass(m.type)}">${m.type}</span></td>
       <td>${m.user}</td>
@@ -586,39 +717,55 @@ async function sendPush() {
   const statusEl = document.getElementById('push-status');
   const resultEl = document.getElementById('push-result');
   const isQq = target === 'qq_group' || target === 'qq_user';
-  if (isQq) {
-    if (!userid.trim()) {
-      resultEl.innerHTML = '<span style="color:#ef4444;">请填写 QQ 群的 group_openid / 用户 openid（或从最近会话选择）</span>';
-      return;
-    }
-    if (format === 'image') {
-      const fileInput = document.getElementById('push-image');
-      if (!fileInput.files || fileInput.files.length === 0) {
-        resultEl.innerHTML = '<span style="color:#ef4444;">请先选择图片</span>';
+    if (isQq) {
+      if (!userid.trim()) {
+        resultEl.innerHTML = '<span style="color:#ef4444;">请填写 QQ 群的 group_openid / 用户 openid（或从最近会话选择）</span>';
         return;
       }
-    } else if (format === 'file') {
-      const fileInput = document.getElementById('push-file');
-      if (!fileInput.files || fileInput.files.length === 0) {
-        resultEl.innerHTML = '<span style="color:#ef4444;">请先选择文件</span>';
+      if (format === 'image') {
+        const fileInput = document.getElementById('push-image');
+        if (!fileInput.files || fileInput.files.length === 0) {
+          resultEl.innerHTML = '<span style="color:#ef4444;">请先选择图片</span>';
+          return;
+        }
+      } else if (format === 'file') {
+        const fileInput = document.getElementById('push-file');
+        if (!fileInput.files || fileInput.files.length === 0) {
+          resultEl.innerHTML = '<span style="color:#ef4444;">请先选择文件</span>';
+          return;
+        }
+      } else if (format === 'video') {
+        const videoInput = document.getElementById('push-video');
+        if (!videoInput.files || videoInput.files.length === 0) {
+          resultEl.innerHTML = '<span style="color:#ef4444;">请先选择视频</span>';
+          return;
+        }
+      } else if (format === 'voice') {
+        if (!document.getElementById('push-voice-text').value.trim()) {
+          resultEl.innerHTML = '<span style="color:#ef4444;">请输入要合成的语音内容</span>';
+          return;
+        }
+      } else if (!content.trim()) {
+        resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>';
         return;
       }
-    } else if (format === 'video') {
-      const videoInput = document.getElementById('push-video');
-      if (!videoInput.files || videoInput.files.length === 0) {
-        resultEl.innerHTML = '<span style="color:#ef4444;">请先选择视频</span>';
+    } else if (target === 'zmx_group') {
+      // 量子密信推送：需要群ID（groupId），格式支持文本和图片
+      if (!userid.trim()) {
+        resultEl.innerHTML = '<span style="color:#ef4444;">请填写量子密信群ID（groupId）</span>';
         return;
       }
-    } else if (format === 'voice') {
-      if (!document.getElementById('push-voice-text').value.trim()) {
-        resultEl.innerHTML = '<span style="color:#ef4444;">请输入要合成的语音内容</span>';
+      if (format === 'image') {
+        const fileInput = document.getElementById('push-image');
+        if (!fileInput.files || fileInput.files.length === 0) {
+          resultEl.innerHTML = '<span style="color:#ef4444;">请先选择图片</span>';
+          return;
+        }
+      } else if (!content.trim()) {
+        resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>';
         return;
       }
-    } else if (!content.trim()) {
-      resultEl.innerHTML = '<span style="color:#ef4444;">请输入消息内容</span>';
-      return;
-    }
-  } else if (format === 'image') {
+    } else if (format === 'image') {
     const fileInput = document.getElementById('push-image');
     if (!fileInput.files || fileInput.files.length === 0) {
       resultEl.innerHTML = '<span style="color:#ef4444;">请先选择图片</span>';
@@ -635,7 +782,7 @@ async function sendPush() {
   resultEl.innerHTML = '';
   try {
     const body = { target, format, content };
-    if ((target === 'user' || isQq) && userid) body.userid = userid;
+    if ((target === 'user' || isQq || target === 'zmx_group') && userid) body.userid = userid;
     if (format === 'image') {
       const file = document.getElementById('push-image').files[0];
       body.imageData = await readFileAsBase64(file);
@@ -693,15 +840,21 @@ document.addEventListener('DOMContentLoaded', function() {
   function refreshTargetUI() {
     const v = targetSel.value;
     const isQq = v === 'qq_group' || v === 'qq_user';
-    const needsId = v === 'user' || isQq;
+    const isZmx = v === 'zmx_group';
+    const needsId = v === 'user' || isQq || isZmx;
     useridInput.style.display = needsId ? 'inline' : 'none';
     qqSessionSel.style.display = isQq ? 'inline' : 'none';
     const qqTip = document.getElementById('push-qq-tip');
+    const zmxTip = document.getElementById('push-zmx-tip');
     if (qqTip) qqTip.style.display = v === 'qq_group' ? '' : 'none';
+    if (zmxTip) zmxTip.style.display = isZmx ? '' : 'none';
     if (isQq) {
       // QQ 官方机器人支持文本与图片（图片经 base64 上传），不锁定格式
       onFormatChange();
       loadQQSessions();
+    } else if (isZmx) {
+      // 量子密信支持文本和图片
+      onFormatChange();
     }
   }
   targetSel.addEventListener('change', refreshTargetUI);
@@ -814,6 +967,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_json(get_bot_status())
         elif path == '/api/qqstatus':
             self._serve_json(get_qq_status())
+        elif path == '/api/zmxstatus':
+            self._serve_json(get_zmx_status())
         elif path == '/api/messages':
             self._serve_json(get_message_records(50))
         elif path == '/api/logs':
@@ -914,6 +1069,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self._serve_json({"success": True, "detail": f"QQ推送成功 ({target}/{fmt})"})
                 else:
                     self._serve_json({"success": False, "error": f"QQ推送失败: {err}"})
+                return
+            
+            # 量子密信推送：通过量子密信适配器发送
+            if target == 'zmx_group':
+                if not userid.strip():
+                    self._serve_json({"success": False, "error": "量子密信推送需要填写群ID (groupId)"})
+                    return
+                if fmt == 'image' and not image_data:
+                    self._serve_json({"success": False, "error": "量子密信图片推送需要图片数据"})
+                    return
+                ok, err = self._forward_zmx_push(
+                    userid, content, fmt, image_data, image_name,
+                )
+                if ok:
+                    self._serve_json({"success": True, "detail": f"量子密信推送成功 ({fmt})"})
+                else:
+                    self._serve_json({"success": False, "error": f"量子密信推送失败: {err}"})
                 return
 
             # 企微通道不支持文件/视频/语音推送
@@ -1036,6 +1208,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             # 大文件分片上传耗时较长，放宽超时（默认20s不够，200MB 分片可能数分钟）
             with urllib.request.urlopen(req, timeout=600) as resp:
+                data = json.loads(resp.read().decode('utf-8'))
+                return bool(data.get('success')), data.get('error', '') or ''
+        except Exception as e:
+            return False, str(e)
+
+    def _forward_zmx_push(self, group_id, content, fmt='text', image_data='', image_name='image.png'):
+        """通过量子密信适配器发送推送（跨进程）
+        fmt: text / image；量子密信仅支持文本和图片"""
+        import urllib.request
+        import base64
+        try:
+            payload = {
+                "target": "group",
+                "groupid": group_id,
+                "format": fmt,
+            }
+            if fmt == 'image':
+                # 图片推送：传递base64数据
+                payload["image"] = image_data
+                payload["imagename"] = image_name
+                if content.strip():
+                    payload["caption"] = content
+            else:
+                payload["content"] = content
+            
+            # 通过量子密信适配器内部接口转发
+            req = urllib.request.Request(
+                f"http://127.0.0.1:1011/push",
+                data=json.dumps(payload).encode('utf-8'),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode('utf-8'))
                 return bool(data.get('success')), data.get('error', '') or ''
         except Exception as e:

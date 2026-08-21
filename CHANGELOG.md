@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'acee1d53-9ff7-4ddb-94d5-25f5df07eb63'
-  PropagateID: 'acee1d53-9ff7-4ddb-94d5-25f5df07eb63'
-  ReservedCode1: '154fd389-984e-42c3-94ba-44cb70cbcd3a'
-  ReservedCode2: '154fd389-984e-42c3-94ba-44cb70cbcd3a'
+  ProduceID: 'd07757d4-0caa-4fb0-851f-90c98b76ccfd'
+  PropagateID: 'd07757d4-0caa-4fb0-851f-90c98b76ccfd'
+  ReservedCode1: '3b3c1fe6-519b-45e0-b5bc-643fab6ebbb3'
+  ReservedCode2: '3b3c1fe6-519b-45e0-b5bc-643fab6ebbb3'
 ---
 
 # 更新日志
@@ -15,6 +15,47 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.11.0 (2026-08-21)
+
+**面板全面升级：支持企微、QQ、量子密信三通道管理**。
+
+### 新增功能
+- **管理面板三通道支持**（dashboard.py）：
+  - **主动推送**：下拉菜单新增「量子密信群聊 (Webhook)」选项，支持向量子密信群聊推送文本和图片
+  - **消息记录**：合并量子密信消息记录（从 `zmx_messages.json` 读取），表格中显示紫色"密信"来源标签
+  - **实时日志**：读取量子密信适配器日志（带 `[ZMX]` 前缀），合并到日志流中
+  - **能力说明**：新增量子密信专属卡片，说明群聊@、主动推送、会话隔离、用户名映射、公网入口等功能
+  - **页面更新**：标题、头部和 footer 更新为"企微+QQ+量子密信机器人管理面板"，通用能力描述改为"三通道共用"
+- **量子密信适配器推送接口**（zmx_adapter.py）：
+  - 新增 `_handle_push` 方法，处理面板推送请求（支持文本和图片）
+  - 支持通过 HTTP POST `/push` 端点接收面板推送指令
+- **会话标题修复**（zmx_adapter.py）：
+  - 会话标题显示名从 `group_id or phone` 改为 `user_name`（通过 `ZMX_USER_MAP` 映射）
+  - 确保量子密信会话显示可读用户名而非纯ID
+
+### 修复
+- 修复 `dashboard.py` 中 f-string 反斜杠语法错误（Python 3.11 不支持）
+- 修复量子密信会话标题显示问题（显示用户名而非 group_id）
+
+### 变更文件
+- `dashboard.py`（面板前端与后端逻辑全面升级，支持三通道）
+- `zmx_adapter.py`（新增推送接口，修复会话标题显示）
+- `server.py`（新增 `_forward_zmx_push` 方法）
+
+### 测试
+- 三通道主动推送测试：企微、QQ、量子密信推送功能正常
+- 消息记录合并测试：三个通道的消息记录正确合并显示
+- 实时日志测试：三个通道的日志正确合并显示
+- 会话标题测试：量子密信会话显示用户名而非纯ID
+- 服务重启测试：wecom-bot 服务重启后功能正常
+
+### 待办
+- [ ] 更新 wecom-bot 技能文档（SKILL.md）以反映三通道支持
+- [ ] 提交 GitHub 并打 tag（v1.11.0）
+- [ ] 更新工作知识库索引
 
 ---
 
