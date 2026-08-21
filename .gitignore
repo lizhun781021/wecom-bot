@@ -19,6 +19,8 @@ peican_sheet_cache.json
 qq_status.json
 qq_messages.json
 session_time_cache.json
+zmx_messages.json
+zmx_status.json
 
 # 面板推送临时图片
 temp_uploads/
@@ -34,3 +36,9 @@ wecom-bot-stdout.log
 
 # 本地测试文件
 测试群发文件.txt
+
+# 本地技能备份（非仓库内容）
+skill-backup/
+
+# 本地介绍PPT
+*PPT.html

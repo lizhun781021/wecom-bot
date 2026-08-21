@@ -3,119 +3,197 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '97a1f530-5d73-4234-aec5-994348e76cbb'
-  PropagateID: '97a1f530-5d73-4234-aec5-994348e76cbb'
-  ReservedCode1: '9dd487d8-3eba-43c0-9587-0c0dc433f210'
-  ReservedCode2: '9dd487d8-3eba-43c0-9587-0c0dc433f210'
+  ProduceID: '39da73e9-60a1-4957-bb15-099e21a4333c'
+  PropagateID: '39da73e9-60a1-4957-bb15-099e21a4333c'
+  ReservedCode1: '1ef9a6cf-8b63-47e4-a19b-db91d7a44844'
+  ReservedCode2: '1ef9a6cf-8b63-47e4-a19b-db91d7a44844'
 ---
 
-# 企微Python机器人（长连接模式）
+# 企微QQ量子三通道机器人
 
-![version](https://img.shields.io/badge/version-1.5.8-blue)
+![version](https://img.shields.io/badge/version-1.12.0-blue)
 
 ## 简介
-企业微信群聊智能机器人，基于 WebSocket 长连接接收消息，无需域名/备案/回调服务器。
-群聊 @机器人 发图 → 自动下载解密 → 调用 TeleAgent AI（看图+河南标准化配餐）→ 结果回复群里。
 
-v1.1.0 新增**主动推送**能力：通过群机器人 Webhook，可从终端或 Web 面板主动向群聊推送文字/Markdown/图片消息。
+整合**企业微信**（WebSocket 长连接）、**QQ 官方机器人**（botpy SDK）、**量子密信**（webhook 回调）的三通道智能机器人，统一接入本地 8088 OpenAI 兼容代理 → TeleAgent AI 处理，支持群聊/私聊自动回复、主动推送、企微文档/智能表格/待办创建，配备 8505 Web 管理面板。
 
-v1.2.0 新增**AI 配餐后处理三件套**：配餐结果自动写入企微在线表格台账、自动创建跟进待办、复杂方案自动生成企微文档。
-
-v1.3.0 新增**面板图片推送 + 自动压缩**：Web 面板可直接推送图片到群聊/个人，超 2MB 自动压缩；面板改为**主动推送 / 消息记录 / 实时日志**三个 Tab 菜单，默认打开即推送页。
-
-## 双向能力
 ```
-【接收】企微群聊 @机器人 → WebSocket长连接 → AI处理 → 自动回复
-【接收】QQ群聊 @机器人 / 单聊 → qq-botpy WebSocket → AI处理 → 自动回复（v1.4.0）
-【推送】终端/脚本/Web面板 → Webhook API → 主动发消息到群聊
-【推送】TeleAgent → qq_push_* → 主动回消息到 QQ（v1.4.0 双向桥）
-【管理】Web面板（8505）→ 企微/QQ 双通道状态 + 主动推送（v1.5.0 支持 QQ）
-【后处理】AI配餐回复 → 自动写台账+建待办+生成文档 → 群里发通知
+企微用户/QQ用户 → 企微WebSocket / QQ botpy → server.py / qq_official_adapter.py
+  → 禁用环境代理 → 8088 proxy (OpenAI兼容) → TeleAgent AI
+  → 回复: 企微WebSocket原路返回 / QQ API post_message
+  → 后处理: 配餐台账 / 待办创建 / 文档生成 (wecom_api.py MCP)
+  → 主动推送: push.py (Webhook群聊 / 应用消息1v1)
+
+量子密信群 @机器人 → 平台回调(HTTPS POST) → 公网入口(SSH反向隧道) → zmx_adapter.py(:1011)
+  → 复用 server.call_teleagent / build_prompt / get_session_title
+  → 回复: POST callBackUrl (量子密信webhook send API)
 ```
 
-## QQ 官方机器人（v1.6.0）
+## 三通道对比
+
+| 通道 | 连接方向 | 公网需求 | 适配器 | 消息类型 |
+|---|---|---|---|---|
+| 企微 | 机器人主动连平台（WebSocket长连接） | 不需要 | server.py（主进程） | 文字/图片/文件/语音/视频 |
+| QQ | 机器人主动连平台（反向连接） | 不需要 | qq_official_adapter.py（独立进程） | 文字/图片/文件 |
+| 量子密信 | 平台主动连机器人（HTTP回调） | 需要（SSH反向隧道/公网服务器） | zmx_adapter.py（独立进程） | 仅文字（平台限制） |
+
+> 量子密信是回调模式，平台把 @机器人 消息 POST 到指定 URL，必须有公网可达的 HTTPS 端点；企微/QQ 是长连接模式无需公网。这是平台机制决定，代码无法绕过。
+
+## 核心能力
+
+### 1. 消息收发（三通道自动回复）
+
+| 通道 | 接收 | 回复 |
+|---|---|---|
+| 企微 | 群聊 @机器人（文字/图片/语音/视频） | WebSocket 原路 stream 回复 |
+| QQ | 群@消息 + 单聊消息 | QQ 官方 API post_message |
+| 量子密信 | 群聊 @机器人（文字） | POST callBackUrl webhook |
+
+会话按用户/群固定（8088 代理按 `session_title` 复用会话），标题格式：`通道 | 场景 | 显示名 | YYYY-MM-DD HH:mm`。
+
+### 2. 主动推送（push.py）
+
+```bash
+# 群聊
+python push.py group "消息内容"
+python push.py group_md "## 标题\n内容"
+python push.py group_img /path/to/image.jpg
+
+# 个人1v1
+python push.py user <userid> "消息内容"
+python push.py user_file <userid> /path/to/file.docx
 ```
-独立进程运行（与企微主服务互不干扰）：
-    python qq_official_adapter.py
 
-接入：腾讯官方 qq-botpy SDK（WebSocket 长连接，无需公网 IP）
-监听：群@消息（on_group_at_message_create）+ 单聊消息（on_c2c_message_create）
-处理：复用 server.py 管线 → 同一 8088 代理 → 同一套河南标准化技能
-回复：QQ 官方 API（post_group_message / post_c2c_message）
+也可通过 Web 面板 http://127.0.0.1:8505 直接发送。
 
-配置（config.py）：
-    QQ_ENABLED = True
-    QQ_APPID  = "开放平台审核通过后的 AppID"
-    QQ_SECRET = "AppSecret"
-    QQ_USER_MAP = { "openid": "昵称" }   # 可选：面板消息/会话显示昵称（v1.5.3）
+### 3. 企微文档/智能表格/待办（wecom_api.py MCP）
 
-先到 q.qq.com 申请官方机器人（需审核），拿到 AppID/Secret 后填入即可启用
-QQ 官方消息不含昵称字段、也没有查询昵称的开放接口，
-在 QQ_USER_MAP 里给 openid 配昵称，面板就显示「李准」而不是一长串编码（v1.5.3）
+```python
+# 创建文档
+create_wecom_doc("配餐方案_20260819", "# 配餐方案\n...")
 
-v1.6.0 新增能力：
-  · Markdown 消息：AI 回复自动 Markdown 排版（msg_type=2），失败降级纯文本
-  · 视频消息：mp4 ≤30MB 软限制，超限自动降级文件类型
-  · 语音消息：本地 TTS 合成（macOS say + ffmpeg），面板输入文本即发语音
-  · 主动@成员：面板填 @openid，文本中 @占位 自动替换为 <@openid> 富文本语法
-  · 关键词指令：/配餐 /质检 /日报 /话术 /帮助（别名 /pc /zj /rb /hs /bz）
-  · 事件回调：进群欢迎、退群清理、好友增删、群/单聊权限变更（8 个事件）
-  · 富媒体自动识别：jpg→图片 / mp4→视频 / mp3·wav·ogg→语音 / 其他→文件
+# 创建智能表格 + 追加记录
+create_smart_sheet_with_headers("配餐台账_202608", ["时间","处理人","客户号码",...])
+append_peican_record({"时间":"...", "处理人":"张三", ...})
+
+# 待办
+create_todo(content="跟进客户139xxx签约", follower_userid="<userid>")
+get_todo_list(follower_userid="<userid>", limit=10)
+change_todo_user_status(todo_id="td-xxx", follower_userid="<userid>", todo_status=0)
+search_todo_userid("张三")
 ```
 
-## 管理面板（v1.5.2 双通道）
-```
-Web 面板 http://127.0.0.1:8505 支持「企微通道 + QQ通道」双通道管理：
-  · 状态卡片：企微（连接/心跳/重连/消息数）+ QQ（连接/收/回/最近会话）
-  · 消息记录：区分来源（企微 / QQ 标签），QQ 消息落盘合并展示
-  · 主动推送：企微群/个人 + QQ群/私聊（QQ 自动加载最近会话快捷选择，支持文本/Markdown/图片/视频/语音TTS/文件/@）
-  · 实时日志：企微日志 + QQ 适配器日志（[QQ] 前缀）合并展示
+### 4. 服务管理（launchd）
 
-跨进程说明：dashboard（8505）与 QQ 适配器为独立进程，
-QQ 主动推送经本机内部端点 127.0.0.1:18506 转发（仅回环，不对外暴露）。
-QQ 图片推送：面板选「图片」格式 → base64 直传官方 v2 /files 接口 → 富媒体消息（≤5MB）
-QQ 视频推送：面板选「视频」格式 → base64 → 富媒体消息（mp4 ≤30MB 软限制，超限降级文件）
-QQ 语音推送：面板选「语音 (TTS)」→ 本地合成 mp3 → 富媒体消息（file_type=3）
-QQ @推送：面板选「文本/Markdown」填 @openid → 文本中 @占位 替换为 <@openid> 富文本语法（群聊）
-QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合并展示（QQ 绿色标签）
+三个服务常驻、自动重启：
 
-## 架构
+```bash
+launchctl list | grep wecom-bot        # 企微（含8505面板）
+launchctl list | grep qq-adapter       # QQ
+launchctl list | grep zmx-tunnel       # 量子密信反向隧道
 ```
-企微群聊 @机器人发图
-    ↓ WebSocket 长连接（wss://openws.work.weixin.qq.com）
-    ↓ 收到 mixed 消息（text + image）
-    ↓ 下载图片 + AES-256-CBC 解密
-    ↓ HTTP POST 调用本地代理（127.0.0.1:8088/v1/chat/completions）
-    ↓ 代理转发给 TeleAgent super-agent（看图 + 加载河南标准化技能）
-    ↓ 收到 AI 回复
-    ↓ stream 格式回复企微群聊
-    ↓ （如有文件）上传文件 → file 类型消息发送到群
-    ↓ 【v1.2.0 后处理】提取配餐数据 → 写台账 + 建待办 + 生成文档 → 群里发通知
+
+### 5. 监控面板（8505）
+
+Web 面板嵌入 server.py（端口 8505），展示三通道状态（企微/QQ/量子密信）、消息记录、AI回复日志、推送历史、配餐台账链接、用户姓名映射管理。
+
+## 量子密信通道
+
+量子密信适配器（zmx_adapter.py），独立进程，复用 server.py 的 AI 管线。
+
+**公网入口（SSH 反向隧道）**：
 ```
+量子密信平台 → 公网服务器:1011 → SSH反向隧道 → Mac localhost:1011 → zmx_adapter → localhost:8088 AI
+```
+- 云服务器需开启 `GatewayPorts clientspecified`，iptables + 安全组双层放行 1011
+- Mac 端 autossh 保活：`autossh -M 0 -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -R 0.0.0.0:1011:localhost:1011 root@<服务器IP>`
+
+**平台限制**：仅支持文本和 Markdown 推送，图片/文件不可用（upload-attachment 返回 code 7001，webhook key 无上传权限）。
+
+## 快速部署
+
+1. 克隆仓库：`git clone https://github.com/lizhun781021/wecom-bot.git`
+2. 复制配置：`cp config_example.py config.py`
+3. 编辑 `config.py`，填入各通道凭证（企微/QQ/量子密信，按需启用）
+4. 安装依赖：`pip install -r requirements.txt`
+5. 启动机器人：`python server.py`
+
+## 配置（config.py）
+
+```python
+# 企微
+BOT_ID = "xxx"
+BOT_SECRET = "xxx"
+WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+CORP_ID = "xxx"
+CORP_SECRET = "xxx"
+AGENT_ID = "xxx"
+
+# AI 代理
+TELEAGENT_PROXY_URL = "http://127.0.0.1:8088/v1/chat/completions"
+TELEAGENT_MODEL = "NewApi/chat-pro"
+
+# QQ（按需启用）
+QQ_ENABLED = False
+QQ_APPID = "xxx"
+QQ_SECRET = "xxx"
+
+# 量子密信（按需启用）
+ZMX_ENABLED = False
+ZMX_CALLBACK_URL = "https://imtwo.zdxlz.com/im-external/v1/webhook/send?key=xxx"
+ZMX_LISTEN_PORT = 1011
+ZMX_USER_MAP = {"139xxxxxxxx": "张三"}
+
+# 用户映射
+WECOM_USER_MAP = {"wo-xxxxx": "李准"}
+```
+
+## 文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `server.py` | 企微主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传、配餐后处理、面板嵌入、启动QQ/量子密信子进程） |
+| `qq_official_adapter.py` | QQ官方机器人适配器（监听群@/单聊 + TeleAgent双向桥 + 内部推送端点18506） |
+| `zmx_adapter.py` | 量子密信适配器（webhook回调收发 + SSH反向隧道公网入口） |
+| `push.py` | 主动推送模块（群聊Webhook：文字/Markdown/图片/图文；1v1应用消息：文字/Markdown/卡片/图片/文件） |
+| `wecom_api.py` | 企微文档/表格/待办 API 封装（HTTP MCP，含 mcp_config 加密配置自动解密） |
+| `dashboard.py` | Web管理面板（端口8505，三通道状态监控+主动推送+消息记录+实时日志） |
+| `config.py` | 配置文件（**已加入.gitignore，不上传**） |
+| `config_example.py` | 配置模板（脱敏样例） |
+
+## 技术要点
+
+- **企微长连接**：必须用 `stream` 类型回复，mixed 消息结构（text+image），图片 AES-256-CBC 解密
+- **文件上传**：三步同步流程（init→chunk→finish），异步线程执行不阻塞消息接收
+- **图片自动压缩**：超 2MB 自动压缩（PIL，quality 88→40，再 resize 90%→30%）
+- **MCP 配置兜底**：wecom_api.py 优先读 config.py，其次解密 `~/.config/wecom/mcp_config.enc`（AES-256-GCM）
+- **智能表格**：用 `doc_create` + `doc_type="smartsheet"` + `fields` + `sheet_title`，不能用整数类型码
+- **QQ 群推送限制**：官方 API 禁止群主动推送，只能在最后 @mention 后 5 分钟内被动回复（复用 msg_id）
+- **量子密信群隔离**：回调携带的 callBackUrl 是群专属回复地址，必须用它回复（否则串群）
+- **SSH 反向隧道双层防火墙**：需同时放行 iptables + 云平台安全组
+- **消息状态持久化**：适配器内存更新状态后必须同步写回 JSON 文件（面板读文件而非内存），所有路径都要更新
+
+## 依赖服务
+
+- **openai-proxy**（端口8088）：本地 OpenAI 兼容代理，转发请求给 TeleAgent
+- **TeleAgent**：AI 能力来源（看图、河南标准化赋能技能等）
 
 ## 版本管理
 
-本项目使用语义化版本号（`主版本.次版本.修订号`），通过 git tag 标记每个版本：
+本项目使用语义化版本号，通过 git tag 标记每个版本。
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
-| v1.8.0 | 2026-08-17 | 待办能力完全脱离 wecom-cli，新增 mcp_config 解密自动获取 todo MCP URL，7 个待办函数全部走 HTTP MCP |
-| v1.7.1 | 2026-08-17 | 修复配餐台账/待办/文档脱离 wecom-cli 依赖：台账与文档改走 MCP，待办新增 wecom-cli 路径自动探测 |
-| v1.7.0 | 2026-08-17 | 企微侧4类事件处理+Markdown回复+5种模板卡片+文档MCP能力（智能表格一键建表写记录），内置测试指令 /md /card /btn /vote /multi /push /fd /table |
-| v1.6.0 | 2026-08-17 | QQ 机器人 6 大新能力：Markdown/视频/语音(TTS)/主动@/关键词指令/事件回调，面板新增视频与语音格式 |
-| v1.5.10 | 2026-08-17 | 面板→QQ群下发打通（被动回复通道）：自动复用最近5分钟内@的msg_id发文本/图片/文件，重启持久化 |
-| v1.5.9 | 2026-08-16 | QQ文件支持>5MB分片上传（官方upload_prepare→PUT→part_finish→files，上限200MB） |
-| v1.5.8 | 2026-08-16 | 修复QQ文件推送文件名丢失（上传带 file_name，不再显示"未命名"） |
-| v1.5.7 | 2026-08-16 | 新增QQ主动发送文件（base64→官方v2文件接口→富媒体消息，≤5MB） |
-| v1.5.6 | 2026-08-16 | 消息记录增加「场景」列（群聊/私聊，企微+QQ 双通道+历史回填） |
-| v1.5.5 | 2026-08-16 | 修复QQ消息记录重启丢失（启动加载历史+落盘防御合并） |
-| v1.5.4 | 2026-08-16 | 消息记录增加日期列（跨天消息一眼可辨） |
-| v1.5.3 | 2026-08-16 | QQ消息显示昵称：QQ_USER_NAME_MAP映射+面板会话/记录昵称化 |
-| v1.5.2 | 2026-08-16 | 面板消息记录合并QQ消息+修复时间排序+修复QQ图片Route参数 |
-| v1.5.1 | 2026-08-16 | 面板QQ图片推送（base64直传官方接口，≤5MB） |
-| v1.5.0 | 2026-08-16 | 管理面板双通道：QQ状态卡片+消息来源列+QQ主动推送+日志合并 |
-| v1.4.0 | 2026-08-16 | QQ官方机器人接入+TeleAgent双向桥（主动推送）+READY探针修复 |
-| v1.3.0 | 2026-08-16 | 面板图片推送+自动压缩（≤2MB）+Tab三菜单布局 |
+| v1.12.0 | 2026-08-21 | 量子密信消息状态持久化修复 + 推送格式限制为文本/Markdown + 技能文档同步更新 |
+| v1.11.0 | 2026-08-21 | 新增量子密信机器人通道 + 会话标题持久化 + 三通道管理面板 |
+| v1.10.0 | 2026-08-21 | 管理面板全面升级，支持企微、QQ、量子密信三通道管理 |
+| v1.9.0 | 2026-08-20 | 会话按用户/群固定（8088代理按标题复用会话） |
+| v1.8.0 | 2026-08-17 | 待办能力完全脱离 wecom-cli，7个待办函数全部走 HTTP MCP |
+| v1.7.0 | 2026-08-17 | 企微侧4类事件处理+Markdown回复+5种模板卡片+文档MCP能力 |
+| v1.6.0 | 2026-08-17 | QQ机器人6大新能力：Markdown/视频/语音(TTS)/主动@/关键词指令/事件回调 |
+| v1.5.0 | 2026-08-16 | 管理面板双通道：QQ状态卡片+消息来源列+QQ主动推送 |
+| v1.4.0 | 2026-08-16 | QQ官方机器人接入+TeleAgent双向桥 |
+| v1.3.0 | 2026-08-16 | 面板图片推送+自动压缩+Tab三菜单布局 |
 | v1.2.0 | 2026-08-16 | AI配餐后处理：台账表格+跟进待办+企微文档 |
 | v1.1.0 | 2026-08-16 | 新增主动推送群聊消息 + Web管理面板（8505） |
 | v1.0.0 | 2026-08-09 | 首个正式版，支持群聊收图+AI配餐+文件发送全流程 |
@@ -124,114 +202,8 @@ QQ 消息记录：qq_official_adapter.py 落盘到 qq_messages.json，面板合�
 - 完整更新日志见 [CHANGELOG.md](CHANGELOG.md)
 - 历史版本可通过 `git checkout v1.0.0` 回退
 
-## 文件说明
-| 文件 | 说明 |
-|------|------|
-| `VERSION` | 当前版本号 |
-| `CHANGELOG.md` | 更新日志 |
-| `server.py` | 机器人主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传、配餐后处理） |
-| `wecom_api.py` | 企微文档/表格/待办 API 封装（v1.8.0: 待办 7 个函数全部走 HTTP MCP；新增 mcp_config 加密配置自动解密；v1.7.0 新增文档 MCP 能力） |
-| `push.py` | 主动推送模块（群聊Webhook推送：文字/Markdown/图片/图文，1v1应用消息推送，图片超2MB自动压缩） |
-| `dashboard.py` | Web管理面板（端口8505，企微+QQ双通道状态监控+主动推送+消息记录+实时日志，Tab菜单，v1.5.0 支持 QQ） |
-| `qq_official_adapter.py` | QQ 官方机器人适配器（监听群@/单聊消息 + TeleAgent 双向桥主动推送 + 内部推送端点18506，v1.4.0 新增；v1.5.3 增加 openid→昵称显示映射；v1.6.0 增加 Markdown/视频/语音/TTS/@/指令/事件回调） |
-| `config.py` | 配置文件（**已加入.gitignore，不上传GitHub**） |
-| `config_example.py` | 配置模板（脱敏样例，复制为config.py后填入真实凭证） |
-| `peican_sheet_cache.json` | 配餐台账表格 docid/sheet_id 缓存 |
-| `requirements.txt` | Python 依赖 |
-| `venv/` | Python 虚拟环境 |
+## Author
 
-## 快速部署
-1. 克隆仓库：`git clone https://github.com/lizhun781021/wecom-bot.git`
-2. 复制配置：`cp config_example.py config.py`
-3. 编辑 `config.py`，填入你的 Bot ID、Secret、Webhook 地址等
-4. 安装依赖：`pip install -r requirements.txt`
-5. 启动机器人：`python server.py`
+李准的星小辰
 
-## 关键配置（config.py）
-> 配置模板见 `config_example.py`，复制为 `config.py` 后填入真实凭证。
-```python
-BOT_ID = "xxx"           # 企微智能机器人ID
-BOT_SECRET = "xxx"       # 长连接密钥
-WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"  # 群机器人Webhook
-WEBHOOK_KEY = "xxx"      # Webhook的key部分
-TELEAGENT_PROXY_URL = "http://127.0.0.1:8088/v1/chat/completions"
-TELEAGENT_MODEL = "NewApi/chat-pro"
-WECOM_USER_MAP = {       # 企微用户ID → 姓名映射（会话标题显示用）
-    "wo-xxxxx": "李准",
-}
-DEFAULT_TODO_USERID = "your_userid"  # 待办默认创建人userid（企微通讯录中的userid）
-```
-
-## 群机器人 Webhook 获取方式
-1. 企微管理后台 → 应用管理 → 消息推送 → 设置「谁可以创建消息推送」
-2. 企微群聊 → 右上角「...」→「消息推送」→「自定义消息推送」→ 添加
-3. 创建后复制 Webhook 地址，填入 `config.py` 的 `WEBHOOK_URL` 和 `WEBHOOK_KEY`
-
-## 技术要点
-- **企微长连接不支持 text 类型回复**，必须用 `stream` 类型（`aibot_respond_msg` + `msgtype=stream`）
-- **mixed 消息结构**：`body.mixed.msg_item[]`，每个 item 有 `msgtype`（text/image）
-- **图片 AES 解密**：aeskey 是 Base64 编码（43字节需补齐padding），AES-256-CBC，IV 为 key 前16字节
-- **文件上传**：三步同步流程（init→chunk→finish），异步线程执行不阻塞消息接收，_send_lock保护线程安全
-- **超时设置**：看图+生成文档需较长时间，HTTP 超时设为 1800 秒（30分钟）
-
-## launchd 服务
-- 服务名：`com.lizhun.wecom-bot`
-- plist 位置：`~/Library/LaunchAgents/com.lizhun.wecom-bot.plist`
-- 配置：KeepAlive=true（崩溃自动重启）、RunAtLoad=true（开机自启）
-- 运行目录：`~/.local/share/TeleAgent/TeleAgent的工作空间/wecom-bot/`
-
-## 管理命令
-```bash
-# 启动/停止
-launchctl load ~/Library/LaunchAgents/com.lizhun.wecom-bot.plist
-launchctl unload ~/Library/LaunchAgents/com.lizhun.wecom-bot.plist
-
-# 查看状态
-launchctl list | grep wecom-bot
-
-# 查看日志
-tail -f ~/.local/share/TeleAgent/TeleAgent的工作空间/wecom-bot/wecom-bot.log
-```
-
-## 主动推送消息
-```bash
-# 群聊文字
-python push.py group "消息内容"
-
-# 群聊Markdown（支持标题/列表/加粗等）
-python push.py group_md "## 标题
-内容"
-
-# 群聊图片
-python push.py group_img /path/to/image.jpg
-
-# 个人1v1（需配置可信IP，企业>10人可能受限）
-python push.py user <userid> "消息内容"
-```
-
-或通过 Web 管理面板 http://127.0.0.1:8505 直接发送（支持文字/Markdown/图片，图片超2MB自动压缩）。
-
-## 依赖服务
-- **openai-proxy**（端口8088）：本地 OpenAI 兼容代理，将请求转发给 TeleAgent super-agent
-- **TeleAgent**：AI 能力来源，含 image_understanding 看图工具和河南标准化赋能技能
-
-## 使用方式
-### 自动回复（被动接收）
-1. 企微群聊中 @机器人
-2. 发送客户截图 + 文字说明（如"帮我配餐"）
-3. 机器人自动看图分析，回复结果到群里
-
-### 主动推送
-1. 确认 `config.py` 中 `WEBHOOK_URL` 已填写
-2. 命令行 `python push.py group "消息"` 或通过 Web 面板发送
-3. 消息将出现在群聊中（以机器人身份发送）
-
-### AI 配餐后处理（自动执行）
-1. 群聊 @机器人 发图（账单截图等）或文字描述客户情况
-2. AI 回复配餐方案后，自动执行后处理：
-   - 提取配餐数据（客户号码、套餐、金额等）写入企微在线表格台账
-   - 创建跟进待办（默认给 `DEFAULT_TODO_USERID`）
-   - 复杂方案（>800字或多级标题）自动生成企微文档
-3. 群里收到通知消息（含台账链接、待办提示、文档链接）
-
-> **前提**：需在企微后台授权「文档」和「待办」权限，配置 MCP URL（或安装 wecom-cli 让系统自动解密获取）
+> AI生成

@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'b90926ce-6d0e-4daf-a92b-355e02807a41'
-  PropagateID: 'b90926ce-6d0e-4daf-a92b-355e02807a41'
-  ReservedCode1: 'd1f58692-5b58-417b-bf4e-4779345609f3'
-  ReservedCode2: 'd1f58692-5b58-417b-bf4e-4779345609f3'
+  ProduceID: '8d1ca579-b670-4e11-9c60-d10b12f7d301'
+  PropagateID: '8d1ca579-b670-4e11-9c60-d10b12f7d301'
+  ReservedCode1: '367ee39a-0883-484d-92a0-3b2ca03a03ea'
+  ReservedCode2: '367ee39a-0883-484d-92a0-3b2ca03a03ea'
 ---
 
 # 更新日志
@@ -15,6 +15,22 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.12.0 (2026-08-21)
+
+**文档更新：README 全面重写 + 技能文档同步**。
+
+### 变更
+- README.md 全面重写，从「企微Python机器人（长连接模式）」更新为「企微QQ量子三通道机器人」
+  - 标题、简介、架构图反映三通道架构
+  - 新增三通道对比表、量子密信通道说明、SSH反向隧道公网入口方案
+  - 文件说明新增 zmx_adapter.py
+  - 版本表更新至 v1.12.0
+  - 作者标注：李准的星小辰
+- SKILL.md 更新（name_cn: 企微QQ量子三通道机器人）
+- skill-backup/ 从最新技能目录重新备份
 
 ---
 
