@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '8bbb3e9a-4c64-4f9d-806a-db32fe2ac504'
-  PropagateID: '8bbb3e9a-4c64-4f9d-806a-db32fe2ac504'
-  ReservedCode1: '2fdd5f94-d784-4b4e-91c5-c6fb534719e5'
-  ReservedCode2: '2fdd5f94-d784-4b4e-91c5-c6fb534719e5'
+  ProduceID: 'b90926ce-6d0e-4daf-a92b-355e02807a41'
+  PropagateID: 'b90926ce-6d0e-4daf-a92b-355e02807a41'
+  ReservedCode1: 'd1f58692-5b58-417b-bf4e-4779345609f3'
+  ReservedCode2: 'd1f58692-5b58-417b-bf4e-4779345609f3'
 ---
 
 # 更新日志
@@ -15,6 +15,24 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.11.4 (2026-08-21)
+
+**修复：量子密信消息状态卡在"处理中"的问题**。
+
+### 修复
+- 抽取 `_persist_zmx_messages()` 和 `_update_zmx_message_status()` 函数，修复状态更新后只写内存不写文件的问题
+- 修复成功路径状态更新未同步到 JSON 文件（面板读的是文件而非内存，导致永远显示"处理中"）
+- 修复失败路径（AI 超时/返回空）和异常路径都没有更新消息状态的问题，现在统一标记为"失败"
+
+### 变更文件
+- `zmx_adapter.py`（状态更新逻辑重构）
+
+### 测试
+- 服务重启正常，面板可访问
+- 历史卡住的消息已手动修正为"失败"状态
 
 ---
 

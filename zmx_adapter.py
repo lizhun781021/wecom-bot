@@ -137,14 +137,26 @@ def _add_zmx_message_record(msg_type, user, preview, status="处理中", scene="
         })
         if len(ZMX_MESSAGE_RECORDS) > MAX_ZMX_MESSAGE_RECORDS:
             del ZMX_MESSAGE_RECORDS[MAX_ZMX_MESSAGE_RECORDS:]
-    # 同步到文件（供 dashboard 读取）
+    _persist_zmx_messages()
+
+
+def _update_zmx_message_status(new_status: str):
+    """更新最新一条消息记录的状态并持久化到文件"""
+    with ZMX_MESSAGE_RECORDS_LOCK:
+        if ZMX_MESSAGE_RECORDS:
+            ZMX_MESSAGE_RECORDS[0]["status"] = new_status
+    _persist_zmx_messages()
+
+
+def _persist_zmx_messages():
+    """把消息记录写入 zmx_messages.json，供 dashboard（独立进程）读取"""
     try:
         with ZMX_MESSAGE_RECORDS_LOCK:
             records = list(ZMX_MESSAGE_RECORDS)
         with open(ZMX_MESSAGES_FILE, "w", encoding="utf-8") as f:
             json.dump(records, f, ensure_ascii=False, indent=2)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.error(f"量子密信消息记录落盘失败: {e}")
 
 # ========== 出站限流状态 ==========
 _rate_lock = threading.Lock()
@@ -491,6 +503,7 @@ def _process_zmx_message(content: str, group_id: str, phone: str, callback_url: 
         if not result:
             zmx_send_text("抱歉，处理超时或出错了，请稍后重试。", group_id, phone, callback_url)
             _update_zmx_status(total_errors=ZMX_STATUS.get("total_errors", 0) + 1)
+            _update_zmx_message_status("失败")
             return
 
         file_paths = server.extract_file_paths(result)
@@ -509,14 +522,12 @@ def _process_zmx_message(content: str, group_id: str, phone: str, callback_url: 
             zmx_send_markdown(result, group_id, phone, callback_url)
         
         _update_zmx_status(total_replied=ZMX_STATUS.get("total_replied", 0) + 1)
-        # 更新消息记录状态为已回复
-        with ZMX_MESSAGE_RECORDS_LOCK:
-            if ZMX_MESSAGE_RECORDS:
-                ZMX_MESSAGE_RECORDS[0]["status"] = "已回复"
+        _update_zmx_message_status("已回复")
     except Exception as e:
         logger.error(f"量子密信处理异常: {e}")
         _update_zmx_status(total_errors=ZMX_STATUS.get("total_errors", 0) + 1,
                           last_error=str(e)[:200])
+        _update_zmx_message_status("失败")
         try:
             zmx_send_markdown("⚠️ 抱歉，处理您的请求时出现异常，请稍后重试。", group_id, phone, callback_url)
         except Exception:
