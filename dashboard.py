@@ -442,7 +442,7 @@ tr:hover { background: #162232; }
         QQ 群聊已不支持主动推送，需群内最近 5 分钟内有 @ 机器人才能下发（文本/图片/文件均可）。若提示无有效 @，请先在群内 @ 一下机器人再重试。
       </div>
       <div id="push-zmx-tip" style="margin-bottom: 12px; display:none; font-size:12px; color:#a78bfa;">
-        量子密信群聊支持文本和图片推送，需填写群ID (groupId)。平台限制不支持文件/视频/语音等富媒体。
+        量子密信群聊仅支持纯文本推送，需填写群ID (groupId)。平台限制不支持图片/文件/视频/语音等富媒体。
       </div>
       <div style="margin-bottom: 12px;">
         <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">消息格式</label>
@@ -850,16 +850,46 @@ document.addEventListener('DOMContentLoaded', function() {
     if (zmxTip) zmxTip.style.display = isZmx ? '' : 'none';
     if (isQq) {
       // QQ 官方机器人支持文本与图片（图片经 base64 上传），不锁定格式
+      setFormatOptions(v);
       onFormatChange();
       loadQQSessions();
     } else if (isZmx) {
-      // 量子密信支持文本和图片
+      // 量子密信仅支持纯文本和 Markdown
+      setFormatOptions(v);
+      onFormatChange();
+    } else {
+      setFormatOptions(v);
       onFormatChange();
     }
   }
   targetSel.addEventListener('change', refreshTargetUI);
-  refreshTargetUI();
-  const formatSel = document.getElementById('push-format');
+    const formatSel = document.getElementById('push-format');
+    const allFormatOpts = Array.from(formatSel.options);
+    function setFormatOptions(target) {
+      // 各目标支持的格式列表
+      const supportedByTarget = {
+        'group':     ['text', 'markdown', 'image', 'video', 'voice', 'file'],
+        'user':      ['text', 'markdown', 'image', 'video', 'voice', 'file'],
+        'qq_group':  ['text', 'markdown', 'image', 'video', 'voice', 'file'],
+        'qq_user':   ['text', 'markdown', 'image', 'video', 'voice', 'file'],
+        'zmx_group': ['text', 'markdown'],
+      };
+      const allowed = supportedByTarget[target] || ['text', 'markdown', 'image', 'video', 'voice', 'file'];
+      const currentVal = formatSel.value;
+      // 隐藏不支持的选项
+      allFormatOpts.forEach(opt => {
+        if (allowed.includes(opt.value)) {
+          opt.style.display = '';
+        } else {
+          opt.style.display = 'none';
+        }
+      });
+      // 如果当前选中的格式被隐藏了，自动切到第一个可用格式
+      if (!allowed.includes(currentVal)) {
+        formatSel.value = allowed[0];
+      }
+      onFormatChange();
+    }
   const contentWrap = document.getElementById('push-content-wrap');
   const imageWrap = document.getElementById('push-image-wrap');
   const imageInput = document.getElementById('push-image');
@@ -924,6 +954,8 @@ document.addEventListener('DOMContentLoaded', function() {
   // 目标切换时也联动 @ 输入显示
   const targetSel2 = document.getElementById('push-target');
   targetSel2.addEventListener('change', function() { onFormatChange(); });
+  // 初始化：根据默认目标刷新 UI
+  refreshTargetUI();
 });
 async function loadQQSessions() {
   try {

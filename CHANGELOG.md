@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '8c3b963f-e3d7-47bb-a7f3-4810e66ac6da'
-  PropagateID: '8c3b963f-e3d7-47bb-a7f3-4810e66ac6da'
-  ReservedCode1: 'a368cf41-2629-4699-9c70-b28fbbf9c994'
-  ReservedCode2: 'a368cf41-2629-4699-9c70-b28fbbf9c994'
+  ProduceID: '8bbb3e9a-4c64-4f9d-806a-db32fe2ac504'
+  PropagateID: '8bbb3e9a-4c64-4f9d-806a-db32fe2ac504'
+  ReservedCode1: '2fdd5f94-d784-4b4e-91c5-c6fb534719e5'
+  ReservedCode2: '2fdd5f94-d784-4b4e-91c5-c6fb534719e5'
 ---
 
 # 更新日志
@@ -18,7 +18,27 @@ AIGC:
 
 ---
 
-## v1.11.1 (2026-08-21)
+## v1.11.3 (2026-08-21)
+
+**优化：量子密信推送格式选项限制为文本和Markdown**。
+
+### 优化
+- 面板推送目标选择「量子密信群聊」时，格式下拉菜单仅显示「纯文本」和「Markdown」选项，隐藏图片/视频/语音/文件等不支持的格式
+- 新增 `setFormatOptions()` 前端函数，按推送目标动态控制格式选项的显隐，可扩展支持未来其他通道的格式限制
+- 量子密信提示文案更新：从「支持文本和图片」改为「仅支持纯文本」
+- 修复 `refreshTargetUI()` 初始化调用时机问题，移至所有变量声明之后执行，避免 JS 暂时性死区报错
+
+### 变更文件
+- `dashboard.py`（前端JS格式选项控制逻辑 + 提示文案更新）
+
+### 测试
+- 切换到量子密信目标：格式下拉仅显示文本和Markdown，其他选项被隐藏
+- 从量子密信切回企微/QQ：格式下拉恢复全部选项
+- 默认加载页面：格式选项与默认目标匹配
+
+---
+
+## v1.11.2 (2026-08-21)
 
 **修复：量子密信图片推送错误处理优化**。
 
