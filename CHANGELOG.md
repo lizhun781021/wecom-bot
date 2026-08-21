@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'd07757d4-0caa-4fb0-851f-90c98b76ccfd'
-  PropagateID: 'd07757d4-0caa-4fb0-851f-90c98b76ccfd'
-  ReservedCode1: '3b3c1fe6-519b-45e0-b5bc-643fab6ebbb3'
-  ReservedCode2: '3b3c1fe6-519b-45e0-b5bc-643fab6ebbb3'
+  ProduceID: '8c3b963f-e3d7-47bb-a7f3-4810e66ac6da'
+  PropagateID: '8c3b963f-e3d7-47bb-a7f3-4810e66ac6da'
+  ReservedCode1: 'a368cf41-2629-4699-9c70-b28fbbf9c994'
+  ReservedCode2: 'a368cf41-2629-4699-9c70-b28fbbf9c994'
 ---
 
 # 更新日志
@@ -15,6 +15,25 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.11.1 (2026-08-21)
+
+**修复：量子密信图片推送错误处理优化**。
+
+### 修复
+- 修复量子密信图片推送失败时错误信息不明确的问题
+- 添加详细的错误诊断信息，帮助用户理解问题原因
+- 更新面板错误提示，提供更友好的用户指引
+
+### 变更文件
+- `zmx_adapter.py`（添加详细的错误处理和日志）
+- `dashboard.py`（优化错误提示信息）
+
+### 测试
+- 量子密信图片推送测试：错误信息清晰，用户可理解问题原因
+- 文本推送测试：功能正常
 
 ---
 

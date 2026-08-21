@@ -1085,7 +1085,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if ok:
                     self._serve_json({"success": True, "detail": f"量子密信推送成功 ({fmt})"})
                 else:
-                    self._serve_json({"success": False, "error": f"量子密信推送失败: {err}"})
+                    # 提供更详细的错误信息
+                    error_msg = f"量子密信推送失败: {err}"
+                    if "机器人不存在" in err:
+                        error_msg += "\n\n可能原因：\n1. key没有上传权限\n2. 需要不同的机器人key\n3. 量子密信平台不支持通过webhook上传附件\n\n建议：请检查量子密信平台配置，或暂时使用文本推送。"
+                    self._serve_json({"success": False, "error": error_msg})
                 return
 
             # 企微通道不支持文件/视频/语音推送

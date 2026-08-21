@@ -296,7 +296,7 @@ def zmx_upload_and_send(file_path: str, group_id: str = "", phone: str = "", as_
 
     # 1. 上传 -> fileId
     upload_url = url.replace(
-        "/im-external/v1/webhook/send", "/im-api/v1/webhook/upload-attachment"
+        "/im-external/v1/webhook/send", "/im-external/v1/webhook/upload-attachment"
     )
     file_type = "1" if as_image else "2"
     boundary = "----WebKitFormBoundary" + uuid.uuid4().hex
@@ -317,6 +317,10 @@ def zmx_upload_and_send(file_path: str, group_id: str = "", phone: str = "", as_
     file_id = None
     if isinstance(body, dict):
         file_id = (body.get("data") or {}).get("id") or (body.get("content") or {}).get("id")
+        # 检查是否返回"机器人不存在"错误
+        if body.get("code") == 7001 and "机器人不存在" in body.get("message", ""):
+            logger.error(f"量子附件上传失败: 机器人不存在 (code=7001)。可能原因：1) key没有上传权限；2) 需要不同的机器人key；3) 量子密信平台不支持通过webhook上传附件")
+            return None
     if status != 200 or not file_id:
         logger.error(f"量子附件上传失败 status={status} resp={body}")
         return None
@@ -447,7 +451,7 @@ class ZMXWebhookHandler(BaseHTTPRequestHandler):
                     if file_id:
                         self._reply(200, {"success": True, "detail": f"量子密信图片推送成功 (fileId={file_id})"})
                     else:
-                        self._reply(500, {"success": False, "error": "量子密信图片上传/发送失败"})
+                        self._reply(500, {"success": False, "error": "量子密信图片上传/发送失败。可能原因：1) key没有上传权限；2) 需要不同的机器人key；3) 量子密信平台不支持通过webhook上传附件。请检查量子密信平台配置。"})
                 except Exception as e:
                     self._reply(500, {"success": False, "error": f"图片处理失败: {str(e)}"})
                 finally:
