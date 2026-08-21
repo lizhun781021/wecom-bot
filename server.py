@@ -422,6 +422,60 @@ def _save_name_cache():
         logger.warning(f"保存姓名缓存失败: {e}")
 
 
+# ========== 会话首次时间持久化 ==========
+# 让会话标题带"首次建立时间"，同时保持同一用户/同一群固定复用：
+# 8088 代理按 session_title 完全相同才复用，若用当前时间每次标题都变会回到"一句话开一个会话"。
+# 故时间取会话首次建立时刻并持久化，之后同一会话始终复用同一个时间戳。
+SESSION_TIME_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session_time_cache.json")
+_session_time_cache = {}  # {session_key: "YYYY-MM-DD HH:mm"}
+
+_session_time_lock = threading.Lock()
+
+
+def _load_session_time_cache():
+    global _session_time_cache
+    try:
+        if os.path.exists(SESSION_TIME_FILE):
+            with open(SESSION_TIME_FILE, 'r', encoding='utf-8') as f:
+                _session_time_cache = json.load(f)
+            logger.info(f"已加载会话时间缓存: {len(_session_time_cache)} 条")
+    except Exception as e:
+        logger.warning(f"加载会话时间缓存失败: {e}")
+        _session_time_cache = {}
+
+
+def _save_session_time_cache():
+    try:
+        with open(SESSION_TIME_FILE, 'w', encoding='utf-8') as f:
+            json.dump(_session_time_cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"保存会话时间缓存失败: {e}")
+
+
+def get_session_title(channel, scene, display_name, session_key):
+    """生成会话标题：第三部分为可读名称，第四部分为会话首次建立时间（固定复用）。
+
+    参数:
+        channel: 渠道标识，如 '企微' / 'QQ'
+        scene:   场景，如 '私聊' / '群聊'
+        display_name: 可读显示名（姓名/昵称/群名）
+        session_key: 用于稳定复用的会话标识（userid/chatid/openid/group_openid）
+    返回: 会话标题字符串
+    """
+    # 惰性加载：确保缓存已初始化（QQ侧 import server 不会走 __main__ 的加载）
+    if not _session_time_cache:
+        _load_session_time_cache()
+    key = f"{channel}|{scene}|{session_key}"
+    with _session_time_lock:
+        ts = _session_time_cache.get(key)
+        if not ts:
+            # 首次建立会话，记录当前时间（取到分钟）
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime())
+            _session_time_cache[key] = ts
+            _save_session_time_cache()
+        return f"{channel}|{scene}|{display_name}|{ts}"
+
+
 def _get_access_token():
     """获取企微access_token，带缓存（有效期2小时）"""
     global _access_token, _access_token_expire
@@ -759,12 +813,13 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     prompt = build_prompt(file_paths, text_content, user_name)
 
     # 会话标题：稳定标识，同一用户/同一群固定一个会话（不再带时间戳，避免一句话开一个会话）
-    # 私聊：按 userid 区分；群聊：按 chatid 区分（同群共享一个会话，群与私聊互不干扰）
+    # 私聊：显示姓名，会话按 userid 复用；群聊：显示群ID，按 chatid 复用
     if chat_type == "group":
         session_key = chat_id or from_user
-        session_title = f"企微|群聊|{session_key}"
+        session_title = get_session_title("企微", "群聊", session_key, session_key)
     else:
-        session_title = f"企微|私聊|{from_user}"
+        # 私聊：第三部分显示姓名（user_name），会话按 userid 复用
+        session_title = get_session_title("企微", "私聊", user_name, from_user)
 
     has_files = bool(file_paths)
     logger.info(f"开始调用TeleAgent, 调用人={user_name}, 有文件={has_files}")
@@ -1907,6 +1962,9 @@ if __name__ == '__main__':
 
     # 加载本地姓名缓存
     _load_name_cache()
+
+    # 加载会话首次时间缓存（保证会话标题时间戳固定复用）
+    _load_session_time_cache()
 
     # 加载待发文件队列
     _load_pending_files()

@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'ba59a860-1d6f-41a5-ac4b-36bef60bcddb'
-  PropagateID: 'ba59a860-1d6f-41a5-ac4b-36bef60bcddb'
-  ReservedCode1: 'a85b0ae4-f38f-4125-a628-5190e3955bf2'
-  ReservedCode2: 'a85b0ae4-f38f-4125-a628-5190e3955bf2'
+  ProduceID: 'acee1d53-9ff7-4ddb-94d5-25f5df07eb63'
+  PropagateID: 'acee1d53-9ff7-4ddb-94d5-25f5df07eb63'
+  ReservedCode1: '154fd389-984e-42c3-94ba-44cb70cbcd3a'
+  ReservedCode2: '154fd389-984e-42c3-94ba-44cb70cbcd3a'
 ---
 
 # 更新日志
@@ -15,6 +15,48 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.10.0 (2026-08-21)
+
+**新增：量子密信（中国电信）机器人通道接入 + 会话标题持久化优化**。
+
+### 新增功能
+- **量子密信适配器**（zmx_adapter.py，新文件）：
+  - 将量子密信接入 wecom-bot 统一 AI 管线，作为继企微、QQ 之后的第三个通讯通道
+  - 复用 server.py 的 `call_teleagent` / `build_prompt` / `extract_file_paths` / `get_session_title`
+  - 出站发送：`zmx_send_text`（自动分片 5000 字）、`zmx_send_markdown`（带 title 卡片，行首语法标记+行内符号清洗，24 字符截断）、`zmx_upload_and_send`（附件+图片，30MB 限制）
+  - 入站回调：HTTP 服务（端口 1011，路径 /webhook），校验必填字段（type/textMsg/phone/groupId/callBackUrl）
+  - 群隔离：回调携带的 `callBackUrl` 作为群回复地址，多群不串
+  - 出站限流：每 callback key 60s/20 条滑动窗口
+  - 协议移植自 mixin-chatbot（已验证的量子密信 webhook 协议）
+  - **注意**：量子密信是回调模式（平台主动 POST 到我们的公网地址），与企微/QQ 的 WebSocket 长连接不同，入站需公网入口（Cloudflare 隧道/内网穿透）
+- **配置项**（config.py / config_example.py）：新增 `ZMX_ENABLED` / `ZMX_CALLBACK_URL` / `ZMX_LISTEN_PORT` / `ZMX_LISTEN_HOST` / `ZMX_WEBHOOK_SECRET`
+
+### 优化
+- **会话标题持久化**（server.py）：
+  - 新增 `get_session_title(channel, scene, display_name, session_key)` 函数
+  - 会话标题第四部分改为"首次建立时间"并持久化到 `session_time_cache.json`，同一会话始终复用同一时间戳（之前每次消息都变 → 8088 代理无法复用会话）
+  - 企微侧（server.py）：私聊显示姓名、群聊显示群 ID，会话分别按 userid/chatid 复用
+  - QQ 侧（qq_official_adapter.py）：私聊显示昵称、群聊显示群 ID，统一复用 `get_session_title()`
+
+### 变更文件
+- `zmx_adapter.py`（新增，量子密信适配器，366 行）
+- `server.py`（新增 `get_session_title()` + 会话时间缓存 + `process_and_reply` 改用新函数）
+- `qq_official_adapter.py`（`_handle_qq_message` 改用 `server.get_session_title()`）
+- `config_example.py`（新增 ZMX 配置模板）
+- `.gitignore`（新增 `session_time_cache.json` 运行时缓存）
+
+### 测试
+- markdown title 清洗逻辑通过 10 个单元用例（标题/列表/引用语法剥离、行内 `*_\``#` 符号清除、空行兜底、24 字符截断）
+- 本地 mock 服务器端到端双向闭环测试通过（回调 ACK → AI 调用 → markdown 构造 → 出站发送）
+
+### 待办
+- [ ] 打通 Cloudflare 隧道（安装 cloudflared，映射本机 1011 端口）
+- [ ] 量子密信平台创建会话机器人，获取 webhook key 填入 config.py
+- [ ] 真实环境双向验证
+- [ ] launchd 托管
 
 ---
 

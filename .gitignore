@@ -18,6 +18,7 @@ name_cache.json
 peican_sheet_cache.json
 qq_status.json
 qq_messages.json
+session_time_cache.json
 
 # 面板推送临时图片
 temp_uploads/

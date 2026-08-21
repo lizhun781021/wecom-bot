@@ -1156,12 +1156,14 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
 
         # 构建 prompt（复用 server.build_prompt）
         prompt = server.build_prompt(file_paths, text_content, user_name)
-        # 会话标题：稳定标识，同一用户/同一群固定一个会话（不再带时间戳，避免一句话开一个会话）
-        # 私聊：按 openid 区分；群聊：按 group_openid 区分（同群共享一个会话，群与私聊互不干扰）
+        # 会话标题：稳定标识，同一用户/同一群固定一个会话，带会话首次建立时间（固定复用）
+        # 私聊：显示昵称，按 openid 复用；群聊：显示群ID，按 group_openid 复用
         if is_group:
-            session_title = f"QQ|群聊|{group_openid or from_user}"
+            session_key = group_openid or from_user
+            session_title = server.get_session_title("QQ", "群聊", session_key, session_key)
         else:
-            session_title = f"QQ|私聊|{from_user}"
+            # 私聊：第三部分显示昵称（user_name），会话按 openid 复用
+            session_title = server.get_session_title("QQ", "私聊", user_name, from_user)
 
         logger.info(f"[QQ] 调用TeleAgent: 来源={from_user} (显示={user_name}), 有文件={bool(file_paths)}")
 

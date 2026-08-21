@@ -58,3 +58,16 @@ QQ_USER_MAP = {
     # "user_openid": "昵称",
     # 例：给发过消息的 openid 起个可读名字，面板就会显示"李准"而不是一长串编码
 }
+
+# === 量子密信（中国电信）机器人配置（v1.10.0）===
+# 在量子密信群聊 → 群设置 → 机器人管理 → 添加机器人，复制 webhook URL 填到下方
+# 格式：https://imtwo.zdxlz.com/im-external/v1/webhook/send?key=<KEY>
+# 说明：量子密信是"回调模式"（平台把 @机器人 消息回调到公网地址），
+#       与企微/QQ 的 WebSocket 长连接不同，入站需公网入口（Cloudflare 隧道/内网穿透）
+ZMX_ENABLED = False  # 改为 True 启用量子密信机器人（独立进程 zmx_adapter.py）
+ZMX_CALLBACK_URL = ""  # 量子密信出站发送 webhook URL（含 key）
+# 入站回调监听端口/地址（需公网可访问，配合隧道把平台回调转发到本端口）
+ZMX_LISTEN_PORT = 1011
+ZMX_LISTEN_HOST = "0.0.0.0"
+# 入站回调密钥（可选，若平台支持自定义请求头校验收紧；留空则不校验）
+ZMX_WEBHOOK_SECRET = ""
