@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '8d1ca579-b670-4e11-9c60-d10b12f7d301'
-  PropagateID: '8d1ca579-b670-4e11-9c60-d10b12f7d301'
-  ReservedCode1: '367ee39a-0883-484d-92a0-3b2ca03a03ea'
-  ReservedCode2: '367ee39a-0883-484d-92a0-3b2ca03a03ea'
+  ProduceID: '95364a64-09d1-48c4-a7df-e78b17508643'
+  PropagateID: '95364a64-09d1-48c4-a7df-e78b17508643'
+  ReservedCode1: 'de5b7192-f16a-49c9-974a-3f288dccfab5'
+  ReservedCode2: 'de5b7192-f16a-49c9-974a-3f288dccfab5'
 ---
 
 # 更新日志
@@ -15,6 +15,45 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.13.0 (2026-08-22)
+
+**量子密信 DCOOS 平台模式：基于接口文档 v1.0.0 新增全套能力**。
+
+### 新增
+- **DCOOS 模式切换**：通过 `ZMX_MODE = "dcoos"` 启用，与原有 webhook 模式并存，随时可切回
+- **三字段鉴权**：`X-APP-ID` + `X-APP-KEY` + `clientId`（替代原 URL key 鉴权）
+- **7 种消息类型发送**：
+  - 文本（text）— 支持多群推送（groupIds 数组）
+  - 图片（image）— fileId + 宽高 + mimeType + altText
+  - 文件（file）— fileId + 文件名 + 大小 + mimeType
+  - 音频（voice）— fileId + 时长 + mimeType（**全新能力**）
+  - 视频（video）— fileId + 时长 + 宽高 + mimeType + 封面（**全新能力**）
+  - Markdown — title + content
+  - 卡片（card）— 标题 + 内容 + 图片 + 跳转URL + 按钮控件 + PC布局（**全新能力**）
+- **多群推送**：`groupIds` 数组一次推送多个群（原 webhook 模式只能单个 groupId）
+- **消息可转发控制**：`canForward` 字段（禁止转发）
+- **文件上传**：DCOOS 鉴权的 multipart/form-data 上传（替代原 webhook key 7001 不可用的上传）
+- **回调加密验签**：
+  - HMAC-SHA256 签名校验（X-CTQ-Timestamp + X-CTQ-Nonce + X-CTQ-Signature）
+  - AES-256-CBC 解密（SHA-256 派生会话密钥 + PKCS7 去填充）
+  - 支持 cryptography 库，降级支持 pyaes 纯 Python 实现
+- **回调 mentionType 分发**：1=单聊 / 2=@所有人 / 3=@部分人 三种场景
+- **回调多消息类型**：text / image / voice / video / file 均可接收处理
+- **面板推送升级**：DCOOS 模式下支持 text / markdown / image / file / card 五种推送格式
+- **接口文档归档**：量子密信接口文档目录纳入仓库
+
+### 变更文件
+- `zmx_adapter.py`（+657 行：24 个新函数、3 处升级）
+- `config_example.py`（+33 行 DCOOS 配置段）
+- `skill-backup/references/zmx_protocol.md`（+120 行 DCOOS 协议文档）
+- `量子密信接口文档/`（接口文档 v1.0.0 归档）
+
+### 兼容性
+- 原有 webhook 模式完整保留，`ZMX_MODE = "webhook"` 时行为不变
+- DCOOS 凭证留空时不会影响 webhook 模式运行
 
 ---
 

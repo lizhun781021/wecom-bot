@@ -71,3 +71,42 @@ ZMX_LISTEN_PORT = 1011
 ZMX_LISTEN_HOST = "0.0.0.0"
 # 入站回调密钥（可选，若平台支持自定义请求头校验收紧；留空则不校验）
 ZMX_WEBHOOK_SECRET = ""
+
+# === DCOOS 平台模式配置（v1.0.0 接口文档新增能力）===
+# 量子密信 DCOOS 平台提供更丰富的消息类型（音频/视频/卡片）、
+# 加密验签回调、多群推送等能力，与 webhook 模式并存，通过 ZMX_MODE 切换。
+#
+# 模式切换：
+#   "webhook" — 原有模式，URL 带 key 鉴权（text/markdown 可用，附件受限）
+#   "dcoos"   — DCOOS 平台模式，Headers 三字段鉴权（全消息类型 + 加密回调）
+ZMX_MODE = "webhook"  # 切到 "dcoos" 启用新能力
+
+# --- DCOOS 环境地址 ---
+# 测试环境
+ZMX_DCOOS_TEST_SEND_URL = "https://jt-eop-test.dcoos.189.cn:19443/serviceAgent/rest/forcustomers/robots/message/send"
+ZMX_DCOOS_TEST_UPLOAD_URL = "https://jt-eop-test.dcoos.189.cn:19443/serviceAgent/rest/im-external/v1/webhook/upload-attachment"
+# 生产环境
+ZMX_DCOOS_PROD_SEND_URL = "https://10.141.243.200:8443/serviceAgent/rest/forcustomers/robots/message/send"
+ZMX_DCOOS_PROD_UPLOAD_URL = "https://10.141.243.200:8443/serviceAgent/rest/zdxlz/im-external/v1/webhook/upload-attachment"
+# 环境选择："test" 或 "prod"
+ZMX_DCOOS_ENV = "test"
+
+# --- DCOOS 鉴权凭证 ---
+# 在 DCOOS 开发者后台新建应用 → 获取 AppID / AppKey
+# 在应用中新建应用机器人 → 获取 clientId
+ZMX_DCOOS_APP_ID = ""
+ZMX_DCOOS_APP_KEY = ""
+ZMX_DCOOS_CLIENT_ID = ""
+
+# --- DCOOS 回调加密配置 ---
+# 在开发者平台事件订阅中获取：
+#   encryptedKey      — 加密密钥（Base64），用于派生 AES 会话密钥
+#   verificationToken — 校验 Token（Base64），用于 HMAC-SHA256 验签
+ZMX_DCOOS_ENCRYPTED_KEY = ""
+ZMX_DCOOS_VERIFY_TOKEN = ""
+
+# --- DCOOS Dcoos Sku ApiId（订阅后获取，记录用，代码不直接使用）---
+ZMX_DCOOS_TEST_API_ID = "1963507091651870808"      # 测试环境消息推送 Sku
+ZMX_DCOOS_PROD_API_ID = "1964986933788733440"      # 生产环境消息推送 Sku
+ZMX_DCOOS_TEST_UPLOAD_API_ID = "1944653606550421602"  # 测试环境文件上传 Sku
+ZMX_DCOOS_PROD_UPLOAD_API_ID = "1912378263823056896"  # 生产环境文件上传 Sku
