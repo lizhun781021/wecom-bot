@@ -442,7 +442,7 @@ tr:hover { background: #162232; }
         QQ 群聊已不支持主动推送，需群内最近 5 分钟内有 @ 机器人才能下发（文本/图片/文件均可）。若提示无有效 @，请先在群内 @ 一下机器人再重试。
       </div>
       <div id="push-zmx-tip" style="margin-bottom: 12px; display:none; font-size:12px; color:#a78bfa;">
-        量子密信群聊仅支持纯文本推送，需填写群ID (groupId)。平台限制不支持图片/文件/视频/语音等富媒体。
+        量子密信群聊支持文本/Markdown/图片/文件推送，需填写群ID (groupId)。先上传附件获取fileId再发送（两步式）。
       </div>
       <div style="margin-bottom: 12px;">
         <label style="font-size:13px;color:#8a9aaa;margin-right:10px;">消息格式</label>
@@ -563,12 +563,12 @@ tr:hover { background: #162232; }
           <div class="cap-sub">独立进程 zmx_adapter.py · 端口 1011</div>
         </div>
       </div>
-      <div class="cap-item"><span class="cap-label">群聊 @</span><span class="cap-desc">量子密信群 <b>@机器人</b> 对话，AI 智能回复，支持文本消息</span></div>
-      <div class="cap-item"><span class="cap-label">主动推送</span><span class="cap-desc">面板可主动推送文本/图片到量子密信群；需填写群ID (groupId)</span></div>
+      <div class="cap-item"><span class="cap-label">群聊 @</span><span class="cap-desc">量子密信群 <b>@机器人</b> 对话，AI 智能回复，支持文本/图片/文件消息</span></div>
+      <div class="cap-item"><span class="cap-label">主动推送</span><span class="cap-desc">面板可主动推送文本/Markdown/图片/文件到量子密信群；需填写群ID (groupId)</span></div>
       <div class="cap-item"><span class="cap-label">会话隔离</span><span class="cap-desc">每个群独立会话，<b>群与群互不干扰</b>；回调携带专属回复地址</span></div>
       <div class="cap-item"><span class="cap-label">用户名映射</span><span class="cap-desc">手机号自动映射为可读用户名（config.ZMX_USER_MAP），不查企微通讯录</span></div>
       <div class="cap-item"><span class="cap-label">公网入口</span><span class="cap-desc">SSH反向隧道方案：Mac → 公网服务器:1011 → 量子密信平台回调</span></div>
-      <div class="cap-note">⚠️ 量子密信平台限制：仅支持文本消息回调，不支持图片/文件/语音等富媒体。主动推送支持文本和图片。</div>
+      <div class="cap-note">量子密信支持文本/Markdown/图片/文件四种消息（两步式上传+发送）。入站回调目前仅文本。</div>
     </div>
   </div>
 
@@ -854,7 +854,7 @@ document.addEventListener('DOMContentLoaded', function() {
       onFormatChange();
       loadQQSessions();
     } else if (isZmx) {
-      // 量子密信仅支持纯文本和 Markdown
+      // 量子密信支持文本/Markdown/图片/文件
       setFormatOptions(v);
       onFormatChange();
     } else {
@@ -872,7 +872,7 @@ document.addEventListener('DOMContentLoaded', function() {
         'user':      ['text', 'markdown', 'image', 'video', 'voice', 'file'],
         'qq_group':  ['text', 'markdown', 'image', 'video', 'voice', 'file'],
         'qq_user':   ['text', 'markdown', 'image', 'video', 'voice', 'file'],
-        'zmx_group': ['text', 'markdown'],
+        'zmx_group': ['text', 'markdown', 'image', 'file'],
       };
       const allowed = supportedByTarget[target] || ['text', 'markdown', 'image', 'video', 'voice', 'file'];
       const currentVal = formatSel.value;
