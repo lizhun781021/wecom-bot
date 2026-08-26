@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '95364a64-09d1-48c4-a7df-e78b17508643'
-  PropagateID: '95364a64-09d1-48c4-a7df-e78b17508643'
-  ReservedCode1: 'de5b7192-f16a-49c9-974a-3f288dccfab5'
-  ReservedCode2: 'de5b7192-f16a-49c9-974a-3f288dccfab5'
+  ProduceID: 'b7078fa4-f7f9-4be7-a474-9534b2d072d3'
+  PropagateID: 'b7078fa4-f7f9-4be7-a474-9534b2d072d3'
+  ReservedCode1: '7e69b341-885f-4df2-8adf-1efeb5692aae'
+  ReservedCode2: '7e69b341-885f-4df2-8adf-1efeb5692aae'
 ---
 
 # 更新日志
@@ -15,6 +15,27 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.14.0 (2026-08-26)
+
+**量子密信 webhook 模式解除限制，图片/文件推送全通**。
+
+### 修复
+- **upload-attachment 端点修复**：此前 webhook 模式上传附件返回 code 7001"机器人不存在"，2026-08-26 实测已修复，图片和文件上传均返回 fileId
+- **上传参数修正**：`type` 参数从 multipart form-data 改为 URL query 参数（与平台 curl 示例一致），移除 multipart 中多余的 key 字段
+- **移除 7001 错误拦截**：`zmx_upload_and_send` 不再因 code 7001 提前返回，正常走两步式上传+发送流程
+
+### 新增
+- **webhook 模式文件推送**：`_handle_push` 新增 `fmt == "file"` 分支，面板可直接推送文件到量子密信群
+- **两步式发送说明**：SKILL.md / zmx_protocol.md / README.md 全面更新，标注图片/文件为两步式（先上传获取 fileId，再调 send 发送）
+
+### 更新
+- **SKILL.md**：三通道对比表量子密信消息类型改为"文字/图片/文件/Markdown"，移除所有"图片/文件不可用"标注，故障排查表更新
+- **zmx_protocol.md**：上传附件标题移除"⚠️ 平台限制"，补充两步式发送流程说明
+- **README.md**：三通道对比表、消息收发表、量子密信通道说明、文件说明、技术要点全面更新，版本号升至 v1.14.0
+- **介绍页 HTML**：trinity-fusion-intro.html 和三合一介绍PPT.html 同步更新量子密信通道描述、版本号、端口表、版本历史
 
 ---
 

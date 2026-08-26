@@ -8,8 +8,8 @@
   - 复用 server.py 的 call_teleagent / build_prompt / extract_file_paths / get_session_title
   - AI 大脑统一走本地 8088 代理（config.TELEAGENT_PROXY_URL）
   - 收发协议移植自 mixin-chatbot（已验证的量子密信 webhook 协议）：
-      * 发送：POST im-external/v1/webhook/send?key=xxx（text / markdown / image / file）
-      * 附件：POST im-api/v1/webhook/upload-attachment?key=xxx&type=1|2 -> fileId
+       * 发送：POST im-external/v1/webhook/send?key=xxx（text / markdown / image / file）
+       * 附件：POST im-external/v1/webhook/upload-attachment?key=xxx&type=1|2 -> fileId
   - 入站回调：量子密信平台把 @机器人 消息 POST 到本模块起的 HTTP 服务
     （需公网入口：Cloudflare 隧道 / 内网穿透 / 公网服务器反代）
 
@@ -644,17 +644,17 @@ def zmx_upload_and_send(file_path: str, group_id: str = "", phone: str = "", as_
         logger.error(f"附件超过30MB: {file_path}")
         return None
 
-    # 1. 上传 -> fileId
+    # 1. 上传 -> fileId（type 作为 URL query 参数，与 curl 实测一致）
     upload_url = url.replace(
         "/im-external/v1/webhook/send", "/im-external/v1/webhook/upload-attachment"
     )
-    file_type = "1" if as_image else "2"
+    # 在 upload URL 追加 type 查询参数
+    if "?" in upload_url:
+        upload_url += "&type=" + ("1" if as_image else "2")
+    else:
+        upload_url += "?type=" + ("1" if as_image else "2")
     boundary = "----WebKitFormBoundary" + uuid.uuid4().hex
     parts = []
-    parts.append(f"--{boundary}\r\n".encode())
-    parts.append(f'Content-Disposition: form-data; name="key"\r\n\r\n{key}\r\n'.encode())
-    parts.append(f"--{boundary}\r\n".encode())
-    parts.append(f'Content-Disposition: form-data; name="type"\r\n\r\n{file_type}\r\n'.encode())
     parts.append(f"--{boundary}\r\n".encode())
     parts.append(f'Content-Disposition: form-data; name="file"; filename="{path.name}"\r\n'.encode())
     parts.append(b"Content-Type: application/octet-stream\r\n\r\n")
@@ -667,10 +667,6 @@ def zmx_upload_and_send(file_path: str, group_id: str = "", phone: str = "", as_
     file_id = None
     if isinstance(body, dict):
         file_id = (body.get("data") or {}).get("id") or (body.get("content") or {}).get("id")
-        # 检查是否返回"机器人不存在"错误
-        if body.get("code") == 7001 and "机器人不存在" in body.get("message", ""):
-            logger.error(f"量子附件上传失败: 机器人不存在 (code=7001)。可能原因：1) key没有上传权限；2) 需要不同的机器人key；3) 量子密信平台不支持通过webhook上传附件")
-            return None
     if status != 200 or not file_id:
         logger.error(f"量子附件上传失败 status={status} resp={body}")
         return None
@@ -986,7 +982,7 @@ class ZMXWebhookHandler(BaseHTTPRequestHandler):
                     if file_id:
                         self._reply(200, {"success": True, "detail": f"量子密信图片推送成功 (fileId={file_id})"})
                     else:
-                        self._reply(500, {"success": False, "error": "量子密信图片上传/发送失败。可能原因：1) key没有上传权限；2) 需要不同的机器人key；3) 量子密信平台不支持通过webhook上传附件。请检查量子密信平台配置。"})
+                        self._reply(500, {"success": False, "error": "量子密信图片上传/发送失败，请检查日志"})
                 except Exception as e:
                     self._reply(500, {"success": False, "error": f"图片处理失败: {str(e)}"})
                 finally:
@@ -996,6 +992,21 @@ class ZMXWebhookHandler(BaseHTTPRequestHandler):
                             os.remove(temp_path)
                     except Exception:
                         pass
+
+            # 发送文件
+            elif fmt == "file":
+                file_path = data.get("filepath", "")
+                if not file_path or not os.path.isfile(file_path):
+                    self._reply(400, {"success": False, "error": "文件路径无效"})
+                    return
+                try:
+                    file_id = zmx_upload_and_send(file_path, group_id, as_image=False)
+                    if file_id:
+                        self._reply(200, {"success": True, "detail": f"量子密信文件推送成功 (fileId={file_id})"})
+                    else:
+                        self._reply(500, {"success": False, "error": "量子密信文件上传/发送失败，请检查日志"})
+                except Exception as e:
+                    self._reply(500, {"success": False, "error": f"文件处理失败: {str(e)}"})
 
             else:
                 self._reply(400, {"success": False, "error": f"不支持的格式: {fmt}"})

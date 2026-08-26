@@ -3,15 +3,15 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '39da73e9-60a1-4957-bb15-099e21a4333c'
-  PropagateID: '39da73e9-60a1-4957-bb15-099e21a4333c'
-  ReservedCode1: '1ef9a6cf-8b63-47e4-a19b-db91d7a44844'
-  ReservedCode2: '1ef9a6cf-8b63-47e4-a19b-db91d7a44844'
+  ProduceID: '2235d43a-9d3f-470e-aabf-282b68ef80e3'
+  PropagateID: '2235d43a-9d3f-470e-aabf-282b68ef80e3'
+  ReservedCode1: '5f11f04a-53fb-4140-96ab-06b67fb9994b'
+  ReservedCode2: '5f11f04a-53fb-4140-96ab-06b67fb9994b'
 ---
 
 # 企微QQ量子三通道机器人
 
-![version](https://img.shields.io/badge/version-1.12.0-blue)
+![version](https://img.shields.io/badge/version-1.14.0-blue)
 
 ## 简介
 
@@ -35,7 +35,7 @@ AIGC:
 |---|---|---|---|---|
 | 企微 | 机器人主动连平台（WebSocket长连接） | 不需要 | server.py（主进程） | 文字/图片/文件/语音/视频 |
 | QQ | 机器人主动连平台（反向连接） | 不需要 | qq_official_adapter.py（独立进程） | 文字/图片/文件 |
-| 量子密信 | 平台主动连机器人（HTTP回调） | 需要（SSH反向隧道/公网服务器） | zmx_adapter.py（独立进程） | 仅文字（平台限制） |
+| 量子密信 | 平台主动连机器人（HTTP回调） | 需要（SSH反向隧道/公网服务器） | zmx_adapter.py（独立进程） | 文字/图片/文件/Markdown |
 
 > 量子密信是回调模式，平台把 @机器人 消息 POST 到指定 URL，必须有公网可达的 HTTPS 端点；企微/QQ 是长连接模式无需公网。这是平台机制决定，代码无法绕过。
 
@@ -47,7 +47,7 @@ AIGC:
 |---|---|---|
 | 企微 | 群聊 @机器人（文字/图片/语音/视频） | WebSocket 原路 stream 回复 |
 | QQ | 群@消息 + 单聊消息 | QQ 官方 API post_message |
-| 量子密信 | 群聊 @机器人（文字） | POST callBackUrl webhook |
+| 量子密信 | 群聊 @机器人（文字） | POST callBackUrl webhook（文本/Markdown/图片/文件） |
 
 会话按用户/群固定（8088 代理按 `session_title` 复用会话），标题格式：`通道 | 场景 | 显示名 | YYYY-MM-DD HH:mm`。
 
@@ -108,7 +108,7 @@ Web 面板嵌入 server.py（端口 8505），展示三通道状态（企微/QQ/
 - 云服务器需开启 `GatewayPorts clientspecified`，iptables + 安全组双层放行 1011
 - Mac 端 autossh 保活：`autossh -M 0 -N -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes -R 0.0.0.0:1011:localhost:1011 root@<服务器IP>`
 
-**平台限制**：仅支持文本和 Markdown 推送，图片/文件不可用（upload-attachment 返回 code 7001，webhook key 无上传权限）。
+**消息类型**：支持文本、Markdown、图片、文件 4 种消息。图片/文件通过两步式发送（先调 upload-attachment 上传获取 fileId，再调 send 发送）。
 
 ## 快速部署
 
@@ -154,7 +154,7 @@ WECOM_USER_MAP = {"wo-xxxxx": "李准"}
 |------|------|
 | `server.py` | 企微主程序（WebSocket连接、消息处理、图片解密、代理调用、文件上传、配餐后处理、面板嵌入、启动QQ/量子密信子进程） |
 | `qq_official_adapter.py` | QQ官方机器人适配器（监听群@/单聊 + TeleAgent双向桥 + 内部推送端点18506） |
-| `zmx_adapter.py` | 量子密信适配器（webhook回调收发 + SSH反向隧道公网入口） |
+| `zmx_adapter.py` | 量子密信适配器（webhook回调收发 + 文本/Markdown/图片/文件推送 + SSH反向隧道公网入口） |
 | `push.py` | 主动推送模块（群聊Webhook：文字/Markdown/图片/图文；1v1应用消息：文字/Markdown/卡片/图片/文件） |
 | `wecom_api.py` | 企微文档/表格/待办 API 封装（HTTP MCP，含 mcp_config 加密配置自动解密） |
 | `dashboard.py` | Web管理面板（端口8505，三通道状态监控+主动推送+消息记录+实时日志） |
@@ -169,6 +169,7 @@ WECOM_USER_MAP = {"wo-xxxxx": "李准"}
 - **MCP 配置兜底**：wecom_api.py 优先读 config.py，其次解密 `~/.config/wecom/mcp_config.enc`（AES-256-GCM）
 - **智能表格**：用 `doc_create` + `doc_type="smartsheet"` + `fields` + `sheet_title`，不能用整数类型码
 - **QQ 群推送限制**：官方 API 禁止群主动推送，只能在最后 @mention 后 5 分钟内被动回复（复用 msg_id）
+- **量子密信消息类型**：webhook 模式支持文本/Markdown/图片/文件 4 种，图片/文件为两步式上传发送；DCOOS 模式支持 7 种（含音频/视频/卡片）
 - **量子密信群隔离**：回调携带的 callBackUrl 是群专属回复地址，必须用它回复（否则串群）
 - **SSH 反向隧道双层防火墙**：需同时放行 iptables + 云平台安全组
 - **消息状态持久化**：适配器内存更新状态后必须同步写回 JSON 文件（面板读文件而非内存），所有路径都要更新
@@ -184,6 +185,8 @@ WECOM_USER_MAP = {"wo-xxxxx": "李准"}
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.14.0 | 2026-08-26 | 量子密信 webhook 模式解除限制，图片/文件推送全通（upload-attachment 修复） |
+| v1.13.0 | 2026-08-22 | 量子密信 DCOOS 平台模式（7 种消息类型 + 加密验签 + 多群推送） |
 | v1.12.0 | 2026-08-21 | 量子密信消息状态持久化修复 + 推送格式限制为文本/Markdown + 技能文档同步更新 |
 | v1.11.0 | 2026-08-21 | 新增量子密信机器人通道 + 会话标题持久化 + 三通道管理面板 |
 | v1.10.0 | 2026-08-21 | 管理面板全面升级，支持企微、QQ、量子密信三通道管理 |

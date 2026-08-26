@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '175de0b4-3c50-494d-a341-72386a7c0a9e'
-  PropagateID: '175de0b4-3c50-494d-a341-72386a7c0a9e'
-  ReservedCode1: 'a2827807-9bac-4b84-b05e-b3bab464beb1'
-  ReservedCode2: 'a2827807-9bac-4b84-b05e-b3bab464beb1'
+  ProduceID: '2164ae5f-7aa4-4f39-ad23-22ce9783c5e6'
+  PropagateID: '2164ae5f-7aa4-4f39-ad23-22ce9783c5e6'
+  ReservedCode1: '35ce7fb4-2f9f-48fb-b10f-6e533ed6127b'
+  ReservedCode2: '35ce7fb4-2f9f-48fb-b10f-6e533ed6127b'
 ---
 
 # 量子密信收发协议详解
@@ -62,15 +62,15 @@ Content-Type: application/json
 ```
 > **title 必填**，否则服务端返回 500 且消息不送达。title 从内容首行提取，清洗行首语法标记和行内符号，截断 24 字符。
 
-### 上传附件（图片/文件）— ⚠️ 平台限制，当前不可用
+### 上传附件（图片/文件）
 ```
-POST https://imtwo.zdxlz.com/im-external/v1/webhook/upload-attachment?key=<KEY>&type=1
+POST https://imtwo.zdxlz.com/im-external/v1/webhook/upload-attachment?key=<KEY>&type=<TYPE>
 Content-Type: multipart/form-data
 
 # type=1 图片, type=2 文件
-# 返回: {"ok": true, "code": 200, "data": {"fileId": "xxx"}}
+# 返回: {"ok": true, "code": 200, "data": {"id": "fileId", "name": "xxx", "type": ".png", "size": 180095}}
 ```
-> **实测**：该端点返回 code 7001"机器人不存在"，webhook key 无上传权限。量子密信目前仅支持文本和 Markdown 消息。旧代码中路径 `/im-api/v1/webhook/upload-attachment` 返回 404，正确路径为 `/im-external/v1/webhook/upload-attachment`。
+> **2026-08-26 实测通过**：此前 code 7001"机器人不存在"问题已修复，webhook key 现已支持上传图片和文件。
 
 ### 发送图片/文件（用 fileId）
 ```
@@ -82,6 +82,7 @@ POST https://imtwo.zdxlz.com/im-external/v1/webhook/send?key=<KEY>
 # 文件
 {"type": "file", "fileMsg": {"fileId": "xxx"}, "phone": "...", "groupId": "..."}
 ```
+> 发送流程为两步式：先调 upload-attachment 上传文件获取 fileId，再调 send 发送。
 
 ### 成功响应
 ```json
