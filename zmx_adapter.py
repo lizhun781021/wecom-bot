@@ -115,6 +115,119 @@ ZMX_MESSAGE_RECORDS = []
 ZMX_MESSAGE_RECORDS_LOCK = threading.Lock()
 MAX_ZMX_MESSAGE_RECORDS = 100
 
+# ========== 量子密信权限确认待处理注册表 ==========
+# key: session_title, value: {conf_id, type, group_id, phone/callback, session_title, time}
+_zmx_pending_confirmations = {}
+_zmx_pending_confirm_lock = threading.Lock()
+_ZMX_PENDING_CONFIRM_TTL = 1800  # 30分钟未回复自动清理
+
+
+def _check_zmx_confirmation(content: str, group_id: str, phone: str, callback_url: str):
+    """检查量子密信 webhook 模式消息是否是对待确认请求的"确认/拒绝"回复。
+
+    返回 True 表示已处理（不再走 AI），False 表示正常继续。
+    """
+    text = content.strip()
+    confirm_words = {"确认", "允许", "同意", "是的", "确认执行", "同意执行", "ok", "yes", "y", "好的"}
+    reject_words = {"拒绝", "取消", "不要", "否", "不行", "no", "n", "不要执行"}
+
+    is_confirm = text.lower() in confirm_words
+    is_reject = text.lower() in reject_words
+    if not is_confirm and not is_reject:
+        return False
+
+    user_name = ZMX_USER_MAP.get(phone, phone)
+    session_title = server.get_session_title("密信", "群聊", user_name, group_id or phone)
+
+    with _zmx_pending_confirm_lock:
+        conf_info = _zmx_pending_confirmations.get(session_title)
+        if not conf_info:
+            return False
+        _zmx_pending_confirmations.pop(session_title, None)
+
+    conf_id = conf_info.get("conf_id", "")
+    conf_type = conf_info.get("type", "permission")
+
+    if conf_type == "permission":
+        reply = "once" if is_confirm else "reject"
+        ok, detail = server.reply_teleagent_confirmation(conf_id, reply=reply)
+    else:
+        ok, detail = server.reply_teleagent_confirmation(conf_id, answers=[text])
+
+    if ok:
+        zmx_send_text(f"已{'确认' if is_confirm else '拒绝'}，AI 正在继续处理...", group_id, phone, callback_url)
+        logger.info(f"[密信权限确认] 用户{'确认' if is_confirm else '拒绝'}: conf_id={conf_id}")
+    else:
+        zmx_send_text(f"确认回复失败：{detail}", group_id, phone, callback_url)
+        logger.error(f"[密信权限确认] 回复失败: {detail}")
+
+    return True
+
+
+def _check_dcoos_confirmation(msg: dict):
+    """检查 DCOOS 模式消息是否是对待确认请求的"确认/拒绝"回复。
+
+    返回 True 表示已处理（不再走 AI），False 表示正常继续。
+    """
+    text = ""
+    try:
+        content_obj = msg.get("content") or {}
+        text = str(content_obj.get("content", "")).strip()
+    except Exception:
+        return False
+    if not text:
+        return False
+
+    confirm_words = {"确认", "允许", "同意", "是的", "确认执行", "同意执行", "ok", "yes", "y", "好的"}
+    reject_words = {"拒绝", "取消", "不要", "否", "不行", "no", "n", "不要执行"}
+
+    is_confirm = text.lower() in confirm_words
+    is_reject = text.lower() in reject_words
+    if not is_confirm and not is_reject:
+        return False
+
+    user_id = str(msg.get("userId", "")).strip()
+    group_id = str(msg.get("groupId", "")).strip()
+    user_name = ZMX_USER_MAP.get(user_id, user_id)
+    session_title = server.get_session_title("密信", "群聊", user_name, group_id or user_id)
+
+    with _zmx_pending_confirm_lock:
+        conf_info = _zmx_pending_confirmations.get(session_title)
+        if not conf_info:
+            return False
+        _zmx_pending_confirmations.pop(session_title, None)
+
+    conf_id = conf_info.get("conf_id", "")
+    conf_type = conf_info.get("type", "permission")
+    group_ids = [group_id] if group_id else []
+
+    if conf_type == "permission":
+        reply = "once" if is_confirm else "reject"
+        ok, detail = server.reply_teleagent_confirmation(conf_id, reply=reply)
+    else:
+        ok, detail = server.reply_teleagent_confirmation(conf_id, answers=[text])
+
+    if ok:
+        if group_ids:
+            dcoos_send_text(f"已{'确认' if is_confirm else '拒绝'}，AI 正在继续处理...", group_ids)
+        logger.info(f"[DCOOS权限确认] 用户{'确认' if is_confirm else '拒绝'}: conf_id={conf_id}")
+    else:
+        if group_ids:
+            dcoos_send_text(f"确认回复失败：{detail}", group_ids)
+        logger.error(f"[DCOOS权限确认] 回复失败: {detail}")
+
+    return True
+
+
+def _prune_zmx_pending_confirmations():
+    """清理超时未回复的待确认请求"""
+    now = time.time()
+    with _zmx_pending_confirm_lock:
+        expired = [k for k, v in _zmx_pending_confirmations.items()
+                   if now - v.get("time", 0) > _ZMX_PENDING_CONFIRM_TTL]
+        for k in expired:
+            _zmx_pending_confirmations.pop(k, None)
+
 
 def _persist_zmx_status():
     """把状态+会话写入 zmx_status.json，供 dashboard（独立进程）读取"""
@@ -755,6 +868,11 @@ class ZMXWebhookHandler(BaseHTTPRequestHandler):
 
         logger.info(f"[量子密信-webhook] 收到回调 群={group_id} phone={phone} 内容={content[:50]}")
         self._reply(200, {"status": "success"})
+
+        # ====== 权限确认：检查是否是对待确认请求的回复 ======
+        if _check_zmx_confirmation(content, group_id, phone, callback_url):
+            return
+
         threading.Thread(
             target=_process_zmx_message,
             args=(content, group_id, phone, callback_url),
@@ -814,6 +932,11 @@ class ZMXWebhookHandler(BaseHTTPRequestHandler):
         logger.info(f"[量子密信-DCOOS] 收到回调 userId={msg.get('userId')} group={msg.get('groupId')} "
                      f"mention={msg.get('mentionType')} type={msg.get('type')}")
         self._reply(200, {"success": True, "code": 200})
+
+        # ====== 权限确认：检查是否是对待确认请求的回复 ======
+        if _check_dcoos_confirmation(msg):
+            return
+
         threading.Thread(
             target=_process_dcoos_message,
             args=(msg,),
@@ -1033,7 +1156,57 @@ def _process_zmx_message(content: str, group_id: str, phone: str, callback_url: 
         
         prompt = server.build_prompt([], content, user_name)
         session_title = server.get_session_title("密信", "群聊", user_name, group_id or phone)
-        result = server.call_teleagent(prompt, timeout=1800, session_title=session_title)
+
+        # ====== 流式增量进度推送（量子密信不支持更新消息，用定时新消息模拟） ======
+        _zmx_stream_state = {"last_send": 0.0, "last_len": 0, "stop": False}
+        def _zmx_on_delta(full_text):
+            if _zmx_stream_state["stop"]:
+                return
+            now = time.time()
+            if now - _zmx_stream_state["last_send"] < 5 and len(full_text) - _zmx_stream_state["last_len"] < 100:
+                return
+            _zmx_stream_state["last_send"] = now
+            _zmx_stream_state["last_len"] = len(full_text)
+            try:
+                zmx_send_text(f"正在生成中…\n\n{full_text[-200:]}", group_id, phone, callback_url)
+            except Exception:
+                pass
+
+        result = server.call_teleagent(prompt, timeout=1800, session_title=session_title, on_delta=_zmx_on_delta)
+        _zmx_stream_state["stop"] = True
+
+        # ====== 权限/问题确认处理：提醒用户回复确认/拒绝 ======
+        if isinstance(result, dict) and result.get("confirmation"):
+            conf = result["confirmation"]
+            conf_id = conf.get("id", "")
+            conf_type = conf.get("type", "permission")
+            conf_desc = conf.get("description", "")
+            partial = result.get("partial_text", "")
+
+            if conf_type == "permission":
+                notice = f"⚠️ 需要您确认操作\n\n{conf_desc}\n\n请回复「确认」允许执行，或「拒绝」取消。"
+            else:
+                notice = f"❓ 需要您选择\n\n{conf_desc}\n\n请直接回复您的选择。"
+
+            if partial:
+                notice = partial + "\n\n---\n" + notice
+
+            zmx_send_text(notice, group_id, phone, callback_url)
+            logger.info(f"[密信权限确认] 已提醒用户确认, conf_id={conf_id}, type={conf_type}")
+
+            with _zmx_pending_confirm_lock:
+                _zmx_pending_confirmations[session_title] = {
+                    "conf_id": conf_id,
+                    "type": conf_type,
+                    "group_id": group_id,
+                    "phone": phone,
+                    "callback_url": callback_url,
+                    "session_title": session_title,
+                    "time": time.time(),
+                }
+            _update_zmx_message_status("等待确认")
+            return
+
         if not result:
             zmx_send_text("抱歉，处理超时或出错了，请稍后重试。", group_id, phone, callback_url)
             _update_zmx_status(total_errors=ZMX_STATUS.get("total_errors", 0) + 1)
@@ -1113,7 +1286,59 @@ def _process_dcoos_message(msg: dict):
         # 调用 AI 管线
         prompt = server.build_prompt([], text_content, user_name)
         session_title = server.get_session_title("密信", scene, user_name, group_id or user_id)
-        result = server.call_teleagent(prompt, timeout=1800, session_title=session_title)
+        _dcoos_group_ids = [group_id] if group_id else []
+
+        # ====== 流式增量进度推送（DCOOS 模式，定时新消息模拟） ======
+        _dcoos_stream_state = {"last_send": 0.0, "last_len": 0, "stop": False}
+        def _dcoos_on_delta(full_text):
+            if _dcoos_stream_state["stop"] or not _dcoos_group_ids:
+                return
+            now = time.time()
+            if now - _dcoos_stream_state["last_send"] < 5 and len(full_text) - _dcoos_stream_state["last_len"] < 100:
+                return
+            _dcoos_stream_state["last_send"] = now
+            _dcoos_stream_state["last_len"] = len(full_text)
+            try:
+                dcoos_send_text(f"正在生成中…\n\n{full_text[-200:]}", _dcoos_group_ids)
+            except Exception:
+                pass
+
+        result = server.call_teleagent(prompt, timeout=1800, session_title=session_title, on_delta=_dcoos_on_delta)
+        _dcoos_stream_state["stop"] = True
+
+        # ====== 权限/问题确认处理：提醒用户回复确认/拒绝 ======
+        if isinstance(result, dict) and result.get("confirmation"):
+            conf = result["confirmation"]
+            conf_id = conf.get("id", "")
+            conf_type = conf.get("type", "permission")
+            conf_desc = conf.get("description", "")
+            partial = result.get("partial_text", "")
+            group_ids = [group_id] if group_id else []
+
+            if conf_type == "permission":
+                notice = f"⚠️ 需要您确认操作\n\n{conf_desc}\n\n请回复「确认」允许执行，或「拒绝」取消。"
+            else:
+                notice = f"❓ 需要您选择\n\n{conf_desc}\n\n请直接回复您的选择。"
+
+            if partial:
+                notice = partial + "\n\n---\n" + notice
+
+            if group_ids:
+                dcoos_send_text(notice, group_ids)
+            logger.info(f"[DCOOS权限确认] 已提醒用户确认, conf_id={conf_id}, type={conf_type}")
+
+            with _zmx_pending_confirm_lock:
+                _zmx_pending_confirmations[session_title] = {
+                    "conf_id": conf_id,
+                    "type": conf_type,
+                    "group_id": group_id,
+                    "user_id": user_id,
+                    "session_title": session_title,
+                    "time": time.time(),
+                }
+            _update_zmx_message_status("等待确认")
+            return
+
         if not result:
             if group_id:
                 dcoos_send_text("抱歉，处理超时或出错了，请稍后重试。", [group_id])

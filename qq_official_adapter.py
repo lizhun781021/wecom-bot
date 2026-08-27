@@ -94,6 +94,13 @@ QQ_LAST_GROUP_MSG = {}
 QQ_LAST_GROUP_MSG_LOCK = threading.Lock()
 QQ_PASSIVE_TTL = 5 * 60  # 被动回复有效期（官方 5 分钟）
 
+# ========== QQ 权限确认待处理注册表 ==========
+# key: session_title, value: {conf_id, type, message, from_user, session_title, time}
+# 当 AI 需要权限确认时注册，用户在 QQ 群里回复"确认/拒绝"时匹配并自动应答
+_qq_pending_confirmations = {}
+_qq_pending_confirm_lock = threading.Lock()
+_QQ_PENDING_CONFIRM_TTL = 1800  # 30分钟未回复自动清理
+
 # ========== 富文本 / 指令 / 富媒体辅助 ==========
 QQ_MD_MSG_PREFIX = "## 智能助手\n\n"  # Markdown 消息前缀（AI 回复自动排版）
 QQ_CMD_HELP = (
@@ -1133,6 +1140,69 @@ def _rich_text_at(text: str, target_openid: str = ""):
 
 # ========== 消息处理核心（复用 server.py 管线） ==========
 
+def _check_qq_confirmation(message, text_content, from_user, is_group, group_openid):
+    """检查用户消息是否是对待确认请求的"确认/拒绝"回复（QQ 通道）。
+
+    匹配规则：
+    - 用户消息为"确认"、"允许"、"同意"等 → once
+    - 用户消息为"拒绝"、"取消"、"不要"等 → reject
+    - 当前会话有 pending confirmation 时才拦截
+
+    返回 True 表示已处理（不再走 AI），False 表示正常继续。
+    """
+    text = text_content.strip()
+    confirm_words = {"确认", "允许", "同意", "是的", "确认执行", "同意执行", "ok", "yes", "y", "好的"}
+    reject_words = {"拒绝", "取消", "不要", "否", "不行", "no", "n", "不要执行"}
+
+    is_confirm = text.lower() in confirm_words
+    is_reject = text.lower() in reject_words
+    if not is_confirm and not is_reject:
+        return False
+
+    # 确定当前会话标题
+    if is_group:
+        session_key = group_openid or from_user
+        session_title = server.get_session_title("QQ", "群聊", session_key, session_key)
+    else:
+        display = _display_name_sync(from_user, max_len=20)
+        user_name = display if display != from_user else server.get_user_name(from_user)
+        session_title = server.get_session_title("QQ", "私聊", user_name, from_user)
+
+    with _qq_pending_confirm_lock:
+        conf_info = _qq_pending_confirmations.get(session_title)
+        if not conf_info:
+            return False
+        _qq_pending_confirmations.pop(session_title, None)
+
+    conf_id = conf_info.get("conf_id", "")
+    conf_type = conf_info.get("type", "permission")
+
+    if conf_type == "permission":
+        reply = "once" if is_confirm else "reject"
+        ok, detail = server.reply_teleagent_confirmation(conf_id, reply=reply)
+    else:
+        ok, detail = server.reply_teleagent_confirmation(conf_id, answers=[text])
+
+    if ok:
+        _reply_text(message, f"已{'确认' if is_confirm else '拒绝'}，AI 正在继续处理...")
+        logger.info(f"[QQ权限确认] 用户{'确认' if is_confirm else '拒绝'}: conf_id={conf_id}")
+    else:
+        _reply_text(message, f"确认回复失败：{detail}")
+        logger.error(f"[QQ权限确认] 回复失败: {detail}")
+
+    return True
+
+
+def _prune_qq_pending_confirmations():
+    """清理超时未回复的待确认请求"""
+    now = time.time()
+    with _qq_pending_confirm_lock:
+        expired = [k for k, v in _qq_pending_confirmations.items()
+                   if now - v.get("time", 0) > _QQ_PENDING_CONFIRM_TTL]
+        for k in expired:
+            _qq_pending_confirmations.pop(k, None)
+
+
 def _handle_qq_message(message, from_user, text_content, file_paths, is_group: bool):
     """QQ 消息统一入口：走 server.process_and_reply 的同款逻辑（但回复走 QQ 官方 API）"""
     msg_id = getattr(message, "id", None) or ""
@@ -1145,6 +1215,11 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
         else:
             # 单聊：已映射直接用昵称（避免触发企微通讯录查询报错）；未映射再走企微姓名管线
             user_name = display if display != from_user else server.get_user_name(from_user)
+
+        # ====== 权限确认：检查是否是对待确认请求的"确认/拒绝"回复 ======
+        if _check_qq_confirmation(message, text_content, from_user, is_group, group_openid):
+            _mark_message_status(msg_id, "已确认")
+            return
 
         # 关键词指令优先（不走 AI，直接回复预设文案）
         cmd_match = _match_command(text_content)
@@ -1167,9 +1242,58 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
 
         logger.info(f"[QQ] 调用TeleAgent: 来源={from_user} (显示={user_name}), 有文件={bool(file_paths)}")
 
-        # 调用 AI（阻塞等待，复用 8088 代理）
-        result = server.call_teleagent(prompt, timeout=1800, session_title=session_title)
+        # ====== 流式增量进度推送（QQ 不支持更新消息，用定时新消息模拟） ======
+        _qq_stream_state = {"last_send": 0.0, "last_len": 0, "stop": False}
+        def _qq_on_delta(full_text):
+            """AI 每产出一个文本块时触发，每 5s 发一条进度消息"""
+            if _qq_stream_state["stop"]:
+                return
+            now = time.time()
+            # 节流：距上次发送不足 5s 且增量不足 100 字则跳过
+            if now - _qq_stream_state["last_send"] < 5 and len(full_text) - _qq_stream_state["last_len"] < 100:
+                return
+            _qq_stream_state["last_send"] = now
+            _qq_stream_state["last_len"] = len(full_text)
+            try:
+                _reply_text(message, f"正在生成中…\n\n{full_text[-200:]}")
+            except Exception:
+                pass
+
+        # 调用 AI（阻塞等待，复用 8088 代理，传入流式回调）
+        result = server.call_teleagent(prompt, timeout=1800, session_title=session_title, on_delta=_qq_on_delta)
+        _qq_stream_state["stop"] = True  # 停止进度推送
         _update_status(total_replied=QQ_STATUS["total_replied"] + 1)
+
+        # ====== 权限/问题确认处理：提醒用户在群里回复确认/拒绝 ======
+        if isinstance(result, dict) and result.get("confirmation"):
+            conf = result["confirmation"]
+            conf_id = conf.get("id", "")
+            conf_type = conf.get("type", "permission")
+            conf_desc = conf.get("description", "")
+            partial = result.get("partial_text", "")
+
+            if conf_type == "permission":
+                notice = f"⚠️ 需要您确认操作\n\n{conf_desc}\n\n请回复「确认」允许执行，或「拒绝」取消。"
+            else:
+                notice = f"❓ 需要您选择\n\n{conf_desc}\n\n请直接回复您的选择。"
+
+            if partial:
+                notice = partial + "\n\n---\n" + notice
+
+            _reply_text(message, notice)
+            logger.info(f"[QQ权限确认] 已提醒用户确认, conf_id={conf_id}, type={conf_type}")
+
+            with _qq_pending_confirm_lock:
+                _qq_pending_confirmations[session_title] = {
+                    "conf_id": conf_id,
+                    "type": conf_type,
+                    "message": message,
+                    "from_user": from_user,
+                    "session_title": session_title,
+                    "time": time.time(),
+                }
+            _mark_message_status(msg_id, "等待确认")
+            return
 
         if not result:
             _reply_text(message, "抱歉，处理超时或出错了。请稍后重试。")

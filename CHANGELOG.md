@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'b7078fa4-f7f9-4be7-a474-9534b2d072d3'
-  PropagateID: 'b7078fa4-f7f9-4be7-a474-9534b2d072d3'
-  ReservedCode1: '7e69b341-885f-4df2-8adf-1efeb5692aae'
-  ReservedCode2: '7e69b341-885f-4df2-8adf-1efeb5692aae'
+  ProduceID: '6907c11c-b095-49f8-9477-78447218b077'
+  PropagateID: '6907c11c-b095-49f8-9477-78447218b077'
+  ReservedCode1: '341f58bc-0165-49f0-bacf-4560e3d076af'
+  ReservedCode2: '341f58bc-0165-49f0-bacf-4560e3d076af'
 ---
 
 # 更新日志
@@ -15,6 +15,28 @@ AIGC:
 - 主版本：架构级重构或不兼容改动
 - 次版本：新增功能
 - 修订号：Bug修复
+
+---
+
+## v1.15.0 (2026-08-27)
+
+**三通道权限确认群内应答 + 流式输出，机器人对话不再中断**。
+
+### 新增
+- **权限确认群内应答**：机器人对话中遇到权限确认/问题提问时，不再"处理超时或出错"，改为在群内提醒用户回复【确认】或【拒绝】，用户回复后自动投递回原会话继续，三通道（企微/QQ/量子密信）均已适配
+- **代理层权限事件捕获**：8088 代理新增 `_pending_confirmations` 注册表，捕获 `permission.asked`/`question.asked` 事件；流式模式注入 `confirmation` 字段，非流式模式返回含 confirmation 的 JSON 而非超时错误
+- **应答接口**：`POST /api/permission/reply`（答复权限/问题）、`GET /api/permission/pending`（查询待确认列表），支持会话内多问题批量回答
+- **企微打字机效果**：流式调用 + `on_delta` 回调，0.5s 节流用 `reply_stream(stream_id, finish=False)` 实时更新同一条消息，带 ▌光标，完成后替换完整回复
+- **QQ/量子密信流式进度**：平台 API 不支持消息更新，改为 5 秒定时发送进度消息（显示末尾 200 字），完成后发送最终完整回复
+
+### 修复
+- **对话中断根因修复**：机器人非流式调用 8088 代理死等，TeleAgent 权限挂起时用户无感知，最终只回"处理超时或出错"；现改为捕获权限挂起事件并转为群内提醒
+
+### 更新
+- **企微**（server.py）：`call_teleagent` 改流式调用，`_check_confirmation_reply` 拦截"确认/拒绝"回复，`_prune_pending_confirmations` 清理过期注册
+- **QQ**（qq_official_adapter.py）：`_qq_pending_confirmations` 注册表 + 入口拦截 + 5s 进度消息
+- **量子密信**（zmx_adapter.py）：webhook 与 DCOOS 双模式均适配 confirmation 处理与流式进度推送
+- **README.md**：版本号升至 v1.15.0，版本历史表更新
 
 ---
 

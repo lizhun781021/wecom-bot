@@ -69,6 +69,13 @@ _ws_lock = threading.Lock()
 reconnect_count = 0
 MAX_RECONNECT = 100
 
+# ========== 权限确认待处理注册表 ==========
+# key: session_title, value: {conf_id, type, ws, req_id, stream_id, from_user, time}
+# 当 AI 需要权限确认时注册，用户在群里回复"确认/拒绝"时匹配并自动应答
+_pending_confirmations = {}
+_pending_confirm_lock = threading.Lock()
+_PENDING_CONFIRM_TTL = 1800  # 30分钟未回复自动清理
+
 
 def get_ws():
     """获取当前最新的WebSocket连接对象（线程安全）"""
@@ -552,8 +559,18 @@ def get_user_name(userid):
     return userid
 
 
-def call_teleagent(prompt, timeout=1800, session_title=None):
-    """调用 TeleAgent AI 能力，返回回复文本"""
+def call_teleagent(prompt, timeout=1800, session_title=None, on_delta=None):
+    """调用 TeleAgent AI 能力（流式），返回回复文本或 confirmation 字典。
+
+    参数:
+        on_delta: 可选回调 fn(full_text: str) — 每收到新文本块时触发，
+                  传入到目前为止拼接的完整文本，调用方可用于实时更新消息。
+
+    返回值:
+        str  — 正常回复文本
+        dict — 需要用户确认，格式 {"confirmation": {"id", "type", "description", "tool", "session_id"}, "partial_text": "..."}
+        None — 调用失败
+    """
     try:
         headers = {
             "Content-Type": "application/json",
@@ -564,31 +581,112 @@ def call_teleagent(prompt, timeout=1800, session_title=None):
             "messages": [
                 {"role": "user", "content": prompt}
             ],
-            "stream": False
+            "stream": True,
+            "stream_options": {"include_usage": True}
         }
-        # 传会话标题，让TeleAgent界面上显示调用人+技能
         if session_title:
             data["session_title"] = session_title
-        # 关键：必须绕过环境代理。本机 AI 请求只能直连 127.0.0.1:8088，
-        # 若被 http_proxy 劫持会转发到 7892 等外网代理导致挂起永不返回。
+
+        # 关键：必须绕过环境代理。本机 AI 请求只能直连 127.0.0.1:8088
         _session = requests.Session()
         _session.trust_env = False
         resp = _session.post(
             config.TELEAGENT_PROXY_URL,
             headers=headers,
             json=data,
-            timeout=timeout
+            timeout=timeout,
+            stream=True
         )
         if resp.status_code != 200:
             logger.error(f"代理调用失败: HTTP {resp.status_code}, {resp.text[:200]}")
             return None
-        result = resp.json()
-        content = result['choices'][0]['message']['content']
-        logger.info(f"TeleAgent回复: {content[:100]}...")
-        return content
+
+        collected_text = []
+        confirmation = None
+        # 逐行解析 SSE 流
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            if not line.startswith("data: "):
+                continue
+            payload = line[6:]
+            if payload == "[DONE]":
+                break
+            try:
+                chunk = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            # 检测权限/问题确认信号（代理层注入的 confirmation 字段）
+            if chunk.get("confirmation"):
+                confirmation = chunk["confirmation"]
+                logger.info(f"[权限确认] 收到确认请求: id={confirmation.get('id')} "
+                          f"type={confirmation.get('type')} desc={confirmation.get('description', '')[:80]}")
+                continue
+            # 正常文本增量
+            choices = chunk.get("choices", [])
+            if choices:
+                delta = choices[0].get("delta", {})
+                text = delta.get("content")
+                if text:
+                    collected_text.append(text)
+                    # 触发增量回调（传入到目前为止的完整文本）
+                    if on_delta:
+                        try:
+                            on_delta("".join(collected_text))
+                        except Exception:
+                            pass
+
+        full_text = "".join(collected_text)
+
+        if confirmation:
+            return {"confirmation": confirmation, "partial_text": full_text}
+
+        if not full_text:
+            logger.warning("TeleAgent流式回复为空")
+            return None
+
+        logger.info(f"TeleAgent回复: {full_text[:100]}...")
+        return full_text
     except Exception as e:
         logger.error(f"调用TeleAgent代理异常: {e}")
         return None
+
+
+# ========== 权限确认：群内回复 → 调用 8088 代理的 reply 接口 ==========
+
+def reply_teleagent_confirmation(conf_id, reply="once", answers=None, text=None):
+    """向 8088 代理发送权限/问题确认回复。
+
+    参数:
+        conf_id:  确认请求ID（per_ / que_ 前缀）
+        reply:    权限确认取值 once|always|reject
+        answers:  问题确认的答案列表（可选）
+        text:     附加反馈文本（可选）
+    返回: (success: bool, detail: str)
+    """
+    try:
+        proxy_base = config.TELEAGENT_PROXY_URL.rsplit("/v1/", 1)[0]  # ...:8088
+        url = f"{proxy_base}/api/permission/reply"
+        body = {"id": conf_id}
+        if answers:
+            body["answers"] = answers
+        else:
+            body["reply"] = reply
+        if text:
+            body["text"] = text
+
+        _session = requests.Session()
+        _session.trust_env = False
+        resp = _session.post(url, json=body, timeout=30)
+        if resp.status_code == 200:
+            logger.info(f"[权限确认] 回复成功: id={conf_id} reply={reply}")
+            return True, resp.text[:200]
+        else:
+            logger.error(f"[权限确认] 回复失败: HTTP {resp.status_code} {resp.text[:200]}")
+            return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        logger.error(f"[权限确认] 回复异常: {e}")
+        return False, str(e)
 
 
 def build_prompt(file_paths, text_content, from_user):
@@ -842,8 +940,26 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     hb_thread = threading.Thread(target=heartbeat, daemon=True)
     hb_thread.start()
 
-    # 调用TeleAgent代理
-    result = call_teleagent(prompt, timeout=1800, session_title=session_title)
+    # ====== 流式增量回调：实时更新消息（打字机效果） ======
+    _stream_state = {"last_send": 0.0, "last_text": "", "lock": threading.Lock()}
+    def _on_delta(full_text):
+        """AI 每产出一个文本块时触发，节流 0.5s 更新企微消息"""
+        now = time.time()
+        with _stream_state["lock"]:
+            # 节流：距上次发送不足 0.5s 则跳过（最后一次由调用方 finish=True 收尾）
+            if now - _stream_state["last_send"] < 0.5 and len(full_text) - len(_stream_state["last_text"]) < 200:
+                return
+            _stream_state["last_send"] = now
+            _stream_state["last_text"] = full_text
+        try:
+            cur_ws = get_ws() or ws
+            if cur_ws and hasattr(cur_ws, 'sock') and cur_ws.sock and cur_ws.sock.connected:
+                reply_stream(cur_ws, req_id, full_text + "▌", stream_id=stream_id, finish=False)
+        except Exception:
+            pass
+
+    # 调用TeleAgent代理（传入流式回调）
+    result = call_teleagent(prompt, timeout=1800, session_title=session_title, on_delta=_on_delta)
 
     # 停止心跳
     heartbeat_stop.set()
@@ -853,7 +969,7 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     if not ws or not hasattr(ws, 'sock') or ws.sock is None or not ws.sock.connected:
         logger.error("process_and_reply: WebSocket已断开，无法回复和发送文件")
         # 文件已生成但无法发送，写入待发队列
-        file_paths_from_result = extract_file_paths(result) if result else []
+        file_paths_from_result = extract_file_paths(result) if isinstance(result, str) else []
         if file_paths_from_result:
             add_pending_files(file_paths_from_result, summary="WebSocket断连期间生成")
             logger.info(f"已将{len(file_paths_from_result)}个文件加入待发队列")
@@ -869,12 +985,49 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
         dashboard.update_message_status(0, "失败")
         return
 
+    # ====== 权限/问题确认处理：提醒用户在群里回复确认/拒绝 ======
+    if isinstance(result, dict) and result.get("confirmation"):
+        conf = result["confirmation"]
+        conf_id = conf.get("id", "")
+        conf_type = conf.get("type", "permission")
+        conf_desc = conf.get("description", "")
+        partial = result.get("partial_text", "")
+
+        # 构造提醒消息
+        if conf_type == "permission":
+            notice = f"⚠️ 需要您确认操作\n\n{conf_desc}\n\n请回复「确认」允许执行，或「拒绝」取消。"
+        else:
+            notice = f"❓ 需要您选择\n\n{conf_desc}\n\n请直接回复您的选择。"
+
+        if partial:
+            notice = partial + "\n\n---\n" + notice
+
+        reply_stream(ws, req_id, notice, stream_id=stream_id, finish=True)
+        logger.info(f"[权限确认] 已在群里提醒用户确认, conf_id={conf_id}, type={conf_type}")
+        dashboard.update_message_status(0, "等待确认")
+        # 注册待处理确认（供消息入口识别"确认/拒绝"回复）
+        with _pending_confirm_lock:
+            _pending_confirmations[session_title] = {
+                "conf_id": conf_id,
+                "type": conf_type,
+                "ws": ws,
+                "req_id": req_id,
+                "stream_id": stream_id,
+                "from_user": from_user,
+                "session_title": session_title,
+                "time": time.time(),
+            }
+        return
+
+    # 正常回复（字符串）
+    text_result = result if isinstance(result, str) else str(result)
+
     # 尝试提取所有文件路径
-    file_paths = extract_file_paths(result)
+    file_paths = extract_file_paths(text_result)
 
     if file_paths:
         # 从回复中去掉所有FILE_PATH行，保留摘要
-        text_reply = re.sub(r'FILE_PATH:.+?(?:\n|$)', '', result).strip()
+        text_reply = re.sub(r'FILE_PATH:.+?(?:\n|$)', '', text_result).strip()
         if not text_reply:
             text_reply = "配餐分析文档已生成，请查看下方文件。"
 
@@ -903,10 +1056,10 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
         logger.info(f"共发送{len(file_paths)}个文件")
     else:
         # 没有文件，直接回复文本
-        if len(result) > 3000:
-            result = result[:3000] + "\n\n(回复过长已截断)"
-        reply_stream(ws, req_id, result, stream_id=stream_id, finish=True)
-        logger.info(f"已回复群消息(纯文本), 长度={len(result)}")
+        if len(text_result) > 3000:
+            text_result = text_result[:3000] + "\n\n(回复过长已截断)"
+        reply_stream(ws, req_id, text_result, stream_id=stream_id, finish=True)
+        logger.info(f"已回复群消息(纯文本), 长度={len(text_result)}")
         dashboard.update_message_status(0, "已回复")
         with dashboard.BOT_STATUS_LOCK:
             dashboard.BOT_STATUS["total_replies"] += 1
@@ -914,7 +1067,7 @@ def process_and_reply(ws, req_id, stream_id, file_paths, text_content, from_user
     # ========== 配餐后处理：写台账 + 建待办 + 生成文档 ==========
     # 在主回复发送完成后，异步执行后处理动作
     try:
-        post_process_actions(ws, req_id, stream_id, result, user_name, from_user)
+        post_process_actions(ws, req_id, stream_id, text_result, user_name, from_user)
     except Exception as e:
         logger.error(f"配餐后处理异常: {e}")
 
@@ -1338,6 +1491,76 @@ def handle_builtin_cmd(ws, req_id, text_content, from_user, chattype):
     return True
 
 
+def _check_confirmation_reply(ws, req_id, text_content, from_user, chat_type, chat_id):
+    """检查用户消息是否是对待确认请求的"确认/拒绝"回复。
+
+    匹配规则：
+    - 用户消息为"确认"、"允许"、"同意"、"是的"等 → once
+    - 用户消息为"拒绝"、"取消"、"不要"、"否"等 → reject
+    - 当前会话有 pending confirmation 时才拦截
+
+    返回 True 表示已处理（不再走 AI），False 表示正常继续。
+    """
+    text = text_content.strip()
+    # 确认关键词
+    confirm_words = {"确认", "允许", "同意", "是的", "确认执行", "同意执行", "ok", "yes", "y", "好的"}
+    # 拒绝关键词
+    reject_words = {"拒绝", "取消", "不要", "否", "不行", "no", "n", "不要执行"}
+
+    is_confirm = text.lower() in confirm_words
+    is_reject = text.lower() in reject_words
+    if not is_confirm and not is_reject:
+        return False
+
+    # 确定当前会话标题
+    if chat_type == "group":
+        session_key = chat_id or from_user
+        session_title = get_session_title("企微", "群聊", session_key, session_key)
+    else:
+        user_name = get_user_name(from_user)
+        session_title = get_session_title("企微", "私聊", user_name, from_user)
+
+    with _pending_confirm_lock:
+        conf_info = _pending_confirmations.get(session_title)
+        if not conf_info:
+            return False
+        # 取出后立即移除，防止重复处理
+        _pending_confirmations.pop(session_title, None)
+
+    conf_id = conf_info.get("conf_id", "")
+    conf_type = conf_info.get("type", "permission")
+
+    # 判断回复值
+    if conf_type == "permission":
+        reply = "once" if is_confirm else "reject"
+        ok, detail = reply_teleagent_confirmation(conf_id, reply=reply)
+    else:
+        # 问题类型：直接把文本作为答案
+        ok, detail = reply_teleagent_confirmation(conf_id, answers=[text])
+
+    if ok:
+        reply_stream(ws, req_id, f"已{'确认' if is_confirm else '拒绝'}，AI 正在继续处理...",
+                     finish=True)
+        logger.info(f"[权限确认] 用户{'确认' if is_confirm else '拒绝'}: conf_id={conf_id}")
+        dashboard.update_message_status(0, "已确认")
+    else:
+        reply_stream(ws, req_id, f"确认回复失败：{detail}", finish=True)
+        logger.error(f"[权限确认] 回复失败: {detail}")
+        dashboard.update_message_status(0, "确认失败")
+
+    return True
+
+
+def _prune_pending_confirmations():
+    """清理超时未回复的待确认请求"""
+    now = time.time()
+    with _pending_confirm_lock:
+        expired = [k for k, v in _pending_confirmations.items()
+                   if now - v.get("time", 0) > _PENDING_CONFIRM_TTL]
+        for k in expired:
+            _pending_confirmations.pop(k, None)
+
+
 def handle_text_message(ws, msg, req_id):
     """处理文字消息：统一走TeleAgent代理回复"""
     body = msg.get("body", {})
@@ -1349,6 +1572,10 @@ def handle_text_message(ws, msg, req_id):
     logger.info(f"收到文字消息: from={from_user}, chattype={chattype}, content={text_content[:50]}")
     user_name = get_user_name(from_user)
     dashboard.add_message_record("text", user_name, text_content[:80], "处理中", scene=chattype)
+
+    # ====== 权限确认：检查是否是对待确认请求的回复 ======
+    if _check_confirmation_reply(ws, req_id, text_content, from_user, chattype, chat_id):
+        return
 
     # 先检查内置测试指令
     if handle_builtin_cmd(ws, req_id, text_content, from_user, chattype):
