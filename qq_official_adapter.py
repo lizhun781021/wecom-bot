@@ -1243,11 +1243,16 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
         logger.info(f"[QQ] 调用TeleAgent: 来源={from_user} (显示={user_name}), 有文件={bool(file_paths)}")
 
         # ====== 流式增量进度推送（QQ 不支持更新消息，用定时新消息模拟） ======
+        # 注意：私聊被动回复通道同一 msg_id 只能发一条消息（msg_seq 固定 1），
+        # 若发进度消息会占用被动通道，后续进度与最终回复全被 QQ 平台去重（40054005）。
+        # 因此私聊禁用进度推送，最终回复作为唯一一条被动消息发出。
         _qq_stream_state = {"last_send": 0.0, "last_len": 0, "stop": False}
         def _qq_on_delta(full_text):
-            """AI 每产出一个文本块时触发，每 5s 发一条进度消息"""
+            """AI 每产出一个文本块时触发，每 5s 发一条进度消息（仅群聊）。"""
             if _qq_stream_state["stop"]:
                 return
+            if not is_group:
+                return  # 私聊：被动通道去重限制，不发进度
             now = time.time()
             # 节流：距上次发送不足 5s 且增量不足 100 字则跳过
             if now - _qq_stream_state["last_send"] < 5 and len(full_text) - _qq_stream_state["last_len"] < 100:

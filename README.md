@@ -3,15 +3,15 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '0194e91a-28a8-4e03-a07e-d516df28ffc4'
-  PropagateID: '0194e91a-28a8-4e03-a07e-d516df28ffc4'
-  ReservedCode1: 'b54ae02b-1427-404a-8ec2-5e2bca58e08a'
-  ReservedCode2: 'b54ae02b-1427-404a-8ec2-5e2bca58e08a'
+  ProduceID: '702985aa-7dff-4522-9d8d-3b3eddac2bb8'
+  PropagateID: '702985aa-7dff-4522-9d8d-3b3eddac2bb8'
+  ReservedCode1: 'f71ac1ac-d9c8-4d69-b6e9-68362de774bb'
+  ReservedCode2: 'f71ac1ac-d9c8-4d69-b6e9-68362de774bb'
 ---
 
 # 企微QQ量子三通道机器人
 
-![version](https://img.shields.io/badge/version-1.15.0-blue)
+![version](https://img.shields.io/badge/version-1.15.1-blue)
 
 ## 简介
 
@@ -185,6 +185,7 @@ WECOM_USER_MAP = {"wo-xxxxx": "李准"}
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.15.1 | 2026-08-28 | 修复 QQ 私聊流式输出中断（进度消息占用被动通道被平台去重） |
 | v1.15.0 | 2026-08-27 | 三通道权限确认群内应答 + 流式输出（企微打字机/QQ密信进度消息），对话不再中断 |
 | v1.14.0 | 2026-08-26 | 量子密信 webhook 模式解除限制，图片/文件推送全通（upload-attachment 修复） |
 | v1.13.0 | 2026-08-22 | 量子密信 DCOOS 平台模式（7 种消息类型 + 加密验签 + 多群推送） |
