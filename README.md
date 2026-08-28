@@ -3,15 +3,15 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '702985aa-7dff-4522-9d8d-3b3eddac2bb8'
-  PropagateID: '702985aa-7dff-4522-9d8d-3b3eddac2bb8'
-  ReservedCode1: 'f71ac1ac-d9c8-4d69-b6e9-68362de774bb'
-  ReservedCode2: 'f71ac1ac-d9c8-4d69-b6e9-68362de774bb'
+  ProduceID: 'f5dbc495-eba0-443a-a68f-3840ea38da2b'
+  PropagateID: 'f5dbc495-eba0-443a-a68f-3840ea38da2b'
+  ReservedCode1: '49ebde88-c541-4b7d-b929-64d5c9b940f8'
+  ReservedCode2: '49ebde88-c541-4b7d-b929-64d5c9b940f8'
 ---
 
 # 企微QQ量子三通道机器人
 
-![version](https://img.shields.io/badge/version-1.15.1-blue)
+![version](https://img.shields.io/badge/version-1.15.2-blue)
 
 ## 简介
 
@@ -185,6 +185,7 @@ WECOM_USER_MAP = {"wo-xxxxx": "李准"}
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.15.2 | 2026-08-28 | 修复 QQ 私聊"不流式"根因：同会话长任务并发时新请求排队挂起，新增会话忙碌保护 |
 | v1.15.1 | 2026-08-28 | 修复 QQ 私聊流式输出中断（进度消息占用被动通道被平台去重） |
 | v1.15.0 | 2026-08-27 | 三通道权限确认群内应答 + 流式输出（企微打字机/QQ密信进度消息），对话不再中断 |
 | v1.14.0 | 2026-08-26 | 量子密信 webhook 模式解除限制，图片/文件推送全通（upload-attachment 修复） |

@@ -101,6 +101,16 @@ _qq_pending_confirmations = {}
 _qq_pending_confirm_lock = threading.Lock()
 _QQ_PENDING_CONFIRM_TTL = 1800  # 30分钟未回复自动清理
 
+# ========== 会话忙碌保护 ==========
+# 问题根因：QQ 私聊/群聊按 session_title 固定复用同一 8088 会话。
+# 若同一会话的上一个请求仍在执行（尤其长任务：浏览器操作/文件分析等），
+# 新消息会排队等待上一个请求完成，导致"没有流式输出"（8088 SSE 超时后断开）。
+# 方案：维护每个 session_title 的活动请求计数，同一会话并发请求超过上限时，
+# 直接拒绝新请求并提示用户等待，避免新请求挂起排队。
+_qq_session_active = {}          # session_title -> 活跃请求数
+_qq_session_active_lock = threading.Lock()
+_QQ_SESSION_MAX_CONCURRENCY = 1  # 同一会话同时最多 1 个请求（私聊/群聊按会话隔离）
+
 # ========== 富文本 / 指令 / 富媒体辅助 ==========
 QQ_MD_MSG_PREFIX = "## 智能助手\n\n"  # Markdown 消息前缀（AI 回复自动排版）
 QQ_CMD_HELP = (
@@ -1207,6 +1217,35 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
     """QQ 消息统一入口：走 server.process_and_reply 的同款逻辑（但回复走 QQ 官方 API）"""
     msg_id = getattr(message, "id", None) or ""
     group_openid = getattr(message, "group_openid", None) or ""
+    busy_key = None  # 会话忙碌计数键（在 finally 中释放）
+
+    # ====== 权限确认优先：对"确认/拒绝"回复必须先响应，不受忙碌保护限制 ======
+    # 若上一条请求正在等待用户确认，此时用户回复确认，必须立即放行
+    # （否则忙碌保护会拦截，用户永远无法确认，请求永久卡死）
+    try:
+        if _check_qq_confirmation(message, text_content, from_user, is_group, group_openid):
+            _mark_message_status(msg_id, "已确认")
+            return
+    except Exception:
+        pass
+
+    # 会话忙碌保护：先按用户/群确定 busy_key（与下方 session_title 同源），
+    # 同一会话同时只允许 1 个请求，避免 8088 同会话排队导致"不流式/挂起"。
+    try:
+        if is_group:
+            busy_key = f"group:{group_openid or from_user}"
+        else:
+            busy_key = f"c2c:{from_user}"
+        with _qq_session_active_lock:
+            _qq_session_active[busy_key] = _qq_session_active.get(busy_key, 0) + 1
+            if _qq_session_active[busy_key] > _QQ_SESSION_MAX_CONCURRENCY:
+                _qq_session_active[busy_key] -= 1
+                _reply_text(message, "⏳ 您上一条消息还在处理中（可能正在执行较复杂的任务），请稍等片刻再发消息。")
+                _mark_message_status(msg_id, "已回复")
+                return
+    except Exception as e:
+        logger.warning(f"[QQ] 会话忙碌判定异常（忽略，继续处理）: {e}")
+
     try:
         # 显示名：worker 线程内同步完整解析（手动映射 > 缓存 > API查询 > 截断展示）
         display = _display_name_sync(from_user, max_len=20, group_openid=group_openid)
@@ -1215,11 +1254,6 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
         else:
             # 单聊：已映射直接用昵称（避免触发企微通讯录查询报错）；未映射再走企微姓名管线
             user_name = display if display != from_user else server.get_user_name(from_user)
-
-        # ====== 权限确认：检查是否是对待确认请求的"确认/拒绝"回复 ======
-        if _check_qq_confirmation(message, text_content, from_user, is_group, group_openid):
-            _mark_message_status(msg_id, "已确认")
-            return
 
         # 关键词指令优先（不走 AI，直接回复预设文案）
         cmd_match = _match_command(text_content)
@@ -1347,6 +1381,11 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
         traceback.print_exc()
         _reply_text_and_files(message, f"处理出错: {e}", [])
         _mark_message_status(msg_id, "失败")
+    finally:
+        # 释放会话忙碌计数（无论成功/失败/超时都要释放，避免永久占用）
+        if busy_key:
+            with _qq_session_active_lock:
+                _qq_session_active[busy_key] = max(0, _qq_session_active.get(busy_key, 1) - 1)
 
 
 def _file_type_by_ext(filename: str) -> int:
