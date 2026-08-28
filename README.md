@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'f5dbc495-eba0-443a-a68f-3840ea38da2b'
-  PropagateID: 'f5dbc495-eba0-443a-a68f-3840ea38da2b'
-  ReservedCode1: '49ebde88-c541-4b7d-b929-64d5c9b940f8'
-  ReservedCode2: '49ebde88-c541-4b7d-b929-64d5c9b940f8'
+  ProduceID: '1c7fcc25-3881-4215-b2f8-be3a26841294'
+  PropagateID: '1c7fcc25-3881-4215-b2f8-be3a26841294'
+  ReservedCode1: '0a2fbbe8-711a-418f-8675-ee7ef7401d1e'
+  ReservedCode2: '0a2fbbe8-711a-418f-8675-ee7ef7401d1e'
 ---
 
 # 企微QQ量子三通道机器人
@@ -185,6 +185,7 @@ WECOM_USER_MAP = {"wo-xxxxx": "李准"}
 
 | 版本 | 日期 | 说明 |
 | --- | --- | --- |
+| v1.16.0 | 2026-08-29 | QQ 权限确认通知可靠性增强：同步发送+失败补发+持久化+8505面板待确认看板+长任务超时优化 |
 | v1.15.2 | 2026-08-28 | 修复 QQ 私聊"不流式"根因：同会话长任务并发时新请求排队挂起，新增会话忙碌保护 |
 | v1.15.1 | 2026-08-28 | 修复 QQ 私聊流式输出中断（进度消息占用被动通道被平台去重） |
 | v1.15.0 | 2026-08-27 | 三通道权限确认群内应答 + 流式输出（企微打字机/QQ密信进度消息），对话不再中断 |

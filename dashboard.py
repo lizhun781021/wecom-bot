@@ -23,6 +23,9 @@ QQ_LOG_FILE = os.path.join(PROJECT_DIR, 'qq-adapter-app.log')
 QQ_PUSH_PORT = 18506  # QQ 适配器内部推送端点（与 qq_official_adapter.py 保持一致）
 ZMX_STATUS_FILE = os.path.join(PROJECT_DIR, 'zmx_status.json')
 ZMX_MESSAGES_FILE = os.path.join(PROJECT_DIR, 'zmx_messages.json')
+FEISHU_STATUS_FILE = os.path.join(PROJECT_DIR, 'feishu_status.json')
+FEISHU_MESSAGES_FILE = os.path.join(PROJECT_DIR, 'feishu_messages.json')
+QQ_PENDING_CONFIRM_FILE = os.path.join(PROJECT_DIR, 'qq_pending_confirmations.json')
 
 # ========== 共享状态（由 server.py 写入，dashboard 读取）==========
 # 消息记录列表，每条: {"time": "10:30:45", "type": "text/image/mixed", "user": "李准", "preview": "...", "status": "处理中/已回复/失败"}
@@ -181,6 +184,73 @@ def get_zmx_status():
         return result
     except Exception:
         return default
+
+
+def get_feishu_status():
+    """读取飞书适配器状态（跨进程，从 feishu_status.json 读取）"""
+    default = {
+        "running": False,
+        "connected": False,
+        "last_message_at": "",
+        "last_error": "",
+        "total_received": 0,
+        "total_replied": 0,
+        "updated_at": "",
+        "session": {"group": {}, "user": {}},
+    }
+    try:
+        if not os.path.exists(FEISHU_STATUS_FILE):
+            return default
+        with open(FEISHU_STATUS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        result = dict(default)
+        result.update(data.get("status", {}))
+        result["session"] = data.get("session", {"group": {}, "user": {}})
+        result["updated_at"] = data.get("updated_at", "")
+        return result
+    except Exception:
+        return default
+
+
+def get_feishu_messages(n=50):
+    """获取飞书最近N条消息记录"""
+    try:
+        if not os.path.exists(FEISHU_MESSAGES_FILE):
+            return []
+        with open(FEISHU_MESSAGES_FILE, "r", encoding="utf-8") as f:
+            records = json.load(f)
+        return records[:n]
+    except Exception:
+        return []
+
+
+def get_qq_pending_confirmations():
+    """读取 QQ 待确认权限请求列表（跨进程，从 qq_pending_confirmations.json 读取）"""
+    try:
+        if not os.path.exists(QQ_PENDING_CONFIRM_FILE):
+            return []
+        with open(QQ_PENDING_CONFIRM_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        now = time.time()
+        result = []
+        for k, v in data.items():
+            age = now - v.get("time", 0)
+            if age > 1800:
+                continue
+            result.append({
+                "session_title": k,
+                "conf_id": v.get("conf_id", ""),
+                "type": v.get("type", "permission"),
+                "from_user": v.get("from_user", ""),
+                "is_group": v.get("is_group", False),
+                "notice_text": (v.get("notice_text", "") or "")[:200],
+                "notice_sent": v.get("notice_sent", True),
+                "retry_count": v.get("retry_count", 0),
+                "age_seconds": int(age),
+            })
+        return result
+    except Exception:
+        return []
 
 
 def get_zmx_messages(n=50):
@@ -372,7 +442,7 @@ tr:hover { background: #162232; }
 </head>
 <body>
 <div class="header">
-  <h1><span id="dot" class="status-dot status-offline"></span>企微+QQ+量子密信机器人管理面板</h1>
+  <h1><span id="dot" class="status-dot status-offline"></span>企微+QQ+量子密信+飞书机器人管理面板</h1>
 </div>
 <div class="container">
   <!-- 状态卡片：企微通道 -->
@@ -397,6 +467,12 @@ tr:hover { background: #162232; }
     <div class="card"><div class="card-label">最近单聊会话</div><div class="card-value yellow" id="q-users">0</div></div>
   </div>
 
+  <!-- 待确认权限请求看板 -->
+  <div id="qqPendingSection" style="display:none;margin-top:4px;">
+    <div class="section-title" style="padding:0 0 8px 0;"><span class="section-title">待确认权限请求</span> <span class="badge yellow" id="qp-count">0</span></div>
+    <div id="qqPendingList" style="display:flex;flex-direction:column;gap:8px;"></div>
+  </div>
+
   <!-- 状态卡片：量子密信通道 -->
   <div class="section-title" style="margin-top:4px;padding:0 0 8px 0;"><span class="section-title">量子密信通道</span></div>
   <div class="grid" id="zmxStatusGrid">
@@ -406,6 +482,17 @@ tr:hover { background: #162232; }
     <div class="card"><div class="card-label">附件发送</div><div class="card-value yellow" id="z-attachments">0</div></div>
     <div class="card"><div class="card-label">最后消息</div><div class="card-value blue" id="z-last">-</div></div>
     <div class="card"><div class="card-label">错误数</div><div class="card-value red" id="z-errors">0</div></div>
+  </div>
+
+  <!-- 状态卡片：飞书通道 -->
+  <div class="section-title" style="margin-top:4px;padding:0 0 8px 0;"><span class="section-title">飞书通道</span></div>
+  <div class="grid" id="feishuStatusGrid">
+    <div class="card"><div class="card-label">连接状态</div><div class="card-value" id="f-conn">离线</div></div>
+    <div class="card"><div class="card-label">收到消息</div><div class="card-value green" id="f-msgs">0</div></div>
+    <div class="card"><div class="card-label">已回复</div><div class="card-value green" id="f-replies">0</div></div>
+    <div class="card"><div class="card-label">最后消息</div><div class="card-value blue" id="f-last">-</div></div>
+    <div class="card"><div class="card-label">最近群会话</div><div class="card-value yellow" id="f-groups">0</div></div>
+    <div class="card"><div class="card-label">最近单聊会话</div><div class="card-value yellow" id="f-users">0</div></div>
   </div>
 
   <!-- Tab 菜单 -->
@@ -657,6 +744,56 @@ async function loadStatus() {
     document.getElementById('z-last').textContent = d.last_message_at || '-';
     document.getElementById('z-errors').textContent = d.total_errors;
     if (d.last_error) console.warn('ZMX:', d.last_error);
+  } catch(e) { console.error(e); }
+  try {
+    const r = await fetch('/api/feishustatus');
+    const d = await r.json();
+    const fconn = document.getElementById('f-conn');
+    if (d.connected) {
+      fconn.textContent = '在线'; fconn.className = 'card-value green';
+    } else if (d.running) {
+      fconn.textContent = '连接中'; fconn.className = 'card-value yellow';
+    } else {
+      fconn.textContent = '离线'; fconn.className = 'card-value red';
+    }
+    document.getElementById('f-msgs').textContent = d.total_received;
+    document.getElementById('f-replies').textContent = d.total_replied;
+    document.getElementById('f-last').textContent = d.last_message_at || '-';
+    document.getElementById('f-groups').textContent = Object.keys(d.session.group || {}).length;
+    document.getElementById('f-users').textContent = Object.keys(d.session.user || {}).length;
+    if (d.last_error) console.warn('FEISHU:', d.last_error);
+  } catch(e) { console.error(e); }
+  // QQ 待确认权限请求
+  try {
+    const r = await fetch('/api/qqpending');
+    const d = await r.json();
+    const section = document.getElementById('qqPendingSection');
+    const list = document.getElementById('qqPendingList');
+    const countBadge = document.getElementById('qp-count');
+    if (!d || d.length === 0) {
+      section.style.display = 'none';
+      countBadge.textContent = '0';
+      return;
+    }
+    section.style.display = '';
+    countBadge.textContent = d.length;
+    list.innerHTML = d.map(item => {
+      const ageMin = Math.floor(item.age_seconds / 60);
+      const ageSec = item.age_seconds % 60;
+      const ageStr = ageMin > 0 ? `${ageMin}分${ageSec}秒前` : `${ageSec}秒前`;
+      const typeLabel = item.type === 'permission' ? '权限确认' : '问题选择';
+      const sentLabel = item.notice_sent ? '已送达' : `<span style="color:#f59e0b;">待补发(${item.retry_count}/5)</span>`;
+      const sceneLabel = item.is_group ? '群聊' : '私聊';
+      const textPreview = (item.notice_text || '').substring(0, 120);
+      return `<div style="background:#0d1b2a;border:1px solid #2a3a4a;border-radius:8px;padding:12px 14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <span style="font-size:13px;font-weight:600;color:#e0e0e0;">${typeLabel} · ${sceneLabel}</span>
+          <span style="font-size:11px;color:#5a6a7a;">${ageStr} · ${sentLabel}</span>
+        </div>
+        <div style="font-size:12px;color:#8a9aaa;margin-bottom:4px;">会话: ${item.session_title}</div>
+        <div style="font-size:12px;color:#a0b0c0;background:#111f30;border-radius:4px;padding:6px 8px;">${textPreview}</div>
+      </div>`;
+    }).join('');
   } catch(e) { console.error(e); }
 }
 async function loadMessages() {
@@ -1001,6 +1138,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_json(get_qq_status())
         elif path == '/api/zmxstatus':
             self._serve_json(get_zmx_status())
+        elif path == '/api/feishustatus':
+            self._serve_json(get_feishu_status())
+        elif path == '/api/feishumessages':
+            self._serve_json(get_feishu_messages(50))
+        elif path == '/api/qqpending':
+            self._serve_json(get_qq_pending_confirmations())
         elif path == '/api/messages':
             self._serve_json(get_message_records(50))
         elif path == '/api/logs':

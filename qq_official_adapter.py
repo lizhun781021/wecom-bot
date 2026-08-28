@@ -100,6 +100,114 @@ QQ_PASSIVE_TTL = 5 * 60  # 被动回复有效期（官方 5 分钟）
 _qq_pending_confirmations = {}
 _qq_pending_confirm_lock = threading.Lock()
 _QQ_PENDING_CONFIRM_TTL = 1800  # 30分钟未回复自动清理
+QQ_PENDING_CONFIRM_FILE = os.path.join(PROJECT_ROOT, "qq_pending_confirmations.json")
+_retry_thread_started = False
+
+
+def _persist_pending_confirmations():
+    """持久化待确认请求到文件（重启不丢失，用于面板展示和断线恢复）"""
+    try:
+        with _qq_pending_confirm_lock:
+            serializable = {}
+            for k, v in _qq_pending_confirmations.items():
+                serializable[k] = {kk: vv for kk, vv in v.items()
+                                   if kk != "message" and not callable(vv)}
+        with open(QQ_PENDING_CONFIRM_FILE, "w", encoding="utf-8") as f:
+            json.dump(serializable, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"[QQ] 持久化待确认请求失败: {e}")
+
+
+def _load_pending_confirmations():
+    """启动时加载待确认请求（重启后仍可匹配用户回复）"""
+    try:
+        if os.path.exists(QQ_PENDING_CONFIRM_FILE):
+            with open(QQ_PENDING_CONFIRM_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            with _qq_pending_confirm_lock:
+                _qq_pending_confirmations.update(loaded)
+            logger.info(f"[QQ] 启动加载待确认请求 {len(loaded)} 条")
+    except Exception as e:
+        logger.warning(f"[QQ] 加载待确认请求失败: {e}")
+
+
+def _retry_pending_notice(conf_info):
+    """重试发送失败的权限确认通知（断线恢复后用主动消息补发）"""
+    from_user = conf_info.get("from_user", "")
+    is_group = conf_info.get("is_group", False)
+    group_openid = conf_info.get("group_openid", "")
+    notice_text = conf_info.get("notice_text", "")
+    if not notice_text or not from_user:
+        return False
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        return False
+    try:
+        from botpy.http import Route
+        if is_group and group_openid:
+            route = Route("POST", "/v2/groups/{group_openid}/messages", group_openid=group_openid)
+            payload = {"msg_type": 0, "content": notice_text}
+        else:
+            route = Route("POST", "/v2/users/{openid}/messages", openid=from_user)
+            payload = {"msg_type": 0, "content": notice_text}
+        fut = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(route, json=payload), _QQ_LOOP
+        )
+        fut.result(timeout=15)
+        return True
+    except Exception as e:
+        logger.warning(f"[QQ权限确认] 重试发送通知失败: {e}")
+        return False
+
+
+def _pending_notice_retry_loop():
+    """后台线程：连接恢复后自动补发失败的权限确认通知"""
+    while True:
+        try:
+            time.sleep(30)
+            if not QQ_STATUS.get("connected"):
+                continue
+            with _qq_pending_confirm_lock:
+                pending_retry = [
+                    (k, v) for k, v in _qq_pending_confirmations.items()
+                    if not v.get("notice_sent", True) and v.get("retry_count", 0) < 5
+                ]
+            for session_title, conf_info in pending_retry:
+                if _retry_pending_notice(conf_info):
+                    with _qq_pending_confirm_lock:
+                        if session_title in _qq_pending_confirmations:
+                            _qq_pending_confirmations[session_title]["notice_sent"] = True
+                    _persist_pending_confirmations()
+                    logger.info(f"[QQ权限确认] 断线恢复后补发通知成功: {session_title}")
+                else:
+                    with _qq_pending_confirm_lock:
+                        if session_title in _qq_pending_confirmations:
+                            _qq_pending_confirmations[session_title]["retry_count"] = \
+                                _qq_pending_confirmations[session_title].get("retry_count", 0) + 1
+                    _persist_pending_confirmations()
+        except Exception as e:
+            logger.warning(f"[QQ] 待确认通知重试线程异常: {e}")
+
+
+def get_pending_confirmations():
+    """供 dashboard 读取的待确认请求列表"""
+    _prune_qq_pending_confirmations()
+    with _qq_pending_confirm_lock:
+        result = []
+        for k, v in _qq_pending_confirmations.items():
+            result.append({
+                "session_title": k,
+                "conf_id": v.get("conf_id", ""),
+                "type": v.get("type", "permission"),
+                "from_user": v.get("from_user", ""),
+                "is_group": v.get("is_group", False),
+                "notice_text": v.get("notice_text", "")[:200],
+                "notice_sent": v.get("notice_sent", True),
+                "retry_count": v.get("retry_count", 0),
+                "time": v.get("time", 0),
+            })
+        return result
+
 
 # ========== 会话忙碌保护 ==========
 # 问题根因：QQ 私聊/群聊按 session_title 固定复用同一 8088 会话。
@@ -171,6 +279,7 @@ def _save_qq_name_cache():
 
 
 _load_qq_name_cache()
+_load_pending_confirmations()
 
 
 async def _fetch_qq_member_nickname(group_openid: str, member_openid: str) -> str:
@@ -890,6 +999,22 @@ def _reply_text(message, content: str, max_len: int = 3000):
         return None
 
 
+def _reply_text_sync(message, content: str, max_len: int = 3000, timeout: int = 15) -> bool:
+    """同步发送文本（等待 Future 结果），返回 True/False。
+
+    用于权限确认通知等必须确保送达的场景：发送失败时可标记为待重试。
+    """
+    fut = _reply_text(message, content, max_len)
+    if fut is None:
+        return False
+    try:
+        fut.result(timeout=timeout)
+        return True
+    except Exception as e:
+        logger.warning(f"[QQ] 同步发送文本失败（可能断线）: {e}")
+        return False
+
+
 def _reply_markdown(message, md_content: str, max_len: int = 3000):
     """统一回复 Markdown 消息（msg_type=2）。
 
@@ -1183,6 +1308,7 @@ def _check_qq_confirmation(message, text_content, from_user, is_group, group_ope
         if not conf_info:
             return False
         _qq_pending_confirmations.pop(session_title, None)
+    _persist_pending_confirmations()
 
     conf_id = conf_info.get("conf_id", "")
     conf_type = conf_info.get("type", "permission")
@@ -1211,6 +1337,8 @@ def _prune_qq_pending_confirmations():
                    if now - v.get("time", 0) > _QQ_PENDING_CONFIRM_TTL]
         for k in expired:
             _qq_pending_confirmations.pop(k, None)
+        if expired:
+            _persist_pending_confirmations()
 
 
 def _handle_qq_message(message, from_user, text_content, file_paths, is_group: bool):
@@ -1299,7 +1427,7 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
                 pass
 
         # 调用 AI（阻塞等待，复用 8088 代理，传入流式回调）
-        result = server.call_teleagent(prompt, timeout=1800, session_title=session_title, on_delta=_qq_on_delta)
+        result = server.call_teleagent(prompt, timeout=600, session_title=session_title, on_delta=_qq_on_delta)
         _qq_stream_state["stop"] = True  # 停止进度推送
         _update_status(total_replied=QQ_STATUS["total_replied"] + 1)
 
@@ -1319,8 +1447,12 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
             if partial:
                 notice = partial + "\n\n---\n" + notice
 
-            _reply_text(message, notice)
-            logger.info(f"[QQ权限确认] 已提醒用户确认, conf_id={conf_id}, type={conf_type}")
+            # 同步发送通知（等待结果），失败则标记为待重试，断线恢复后自动补发
+            notice_sent = _reply_text_sync(message, notice, timeout=15)
+            if notice_sent:
+                logger.info(f"[QQ权限确认] 已提醒用户确认, conf_id={conf_id}, type={conf_type}")
+            else:
+                logger.warning(f"[QQ权限确认] 通知发送失败（可能断线），将自动重试, conf_id={conf_id}")
 
             with _qq_pending_confirm_lock:
                 _qq_pending_confirmations[session_title] = {
@@ -1329,8 +1461,14 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
                     "message": message,
                     "from_user": from_user,
                     "session_title": session_title,
+                    "is_group": is_group,
+                    "group_openid": group_openid,
+                    "notice_text": notice,
+                    "notice_sent": notice_sent,
+                    "retry_count": 0,
                     "time": time.time(),
                 }
+            _persist_pending_confirmations()
             _mark_message_status(msg_id, "等待确认")
             return
 
@@ -2045,6 +2183,12 @@ def start_qq_bot():
 
     try:
         _update_status(running=True)
+        # 启动待确认通知重试线程（断线恢复后自动补发）
+        global _retry_thread_started
+        if not _retry_thread_started:
+            threading.Thread(target=_pending_notice_retry_loop, daemon=True).start()
+            _retry_thread_started = True
+            logger.info("[QQ] 待确认通知重试线程已启动")
         client.run(appid=config.QQ_APPID, secret=config.QQ_SECRET)
     except Exception as e:
         _update_status(connected=False, last_error=str(e))
