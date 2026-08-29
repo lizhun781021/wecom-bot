@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'e7f4e380-db6f-4b2c-ae37-b32ac7407822'
-  PropagateID: 'e7f4e380-db6f-4b2c-ae37-b32ac7407822'
-  ReservedCode1: '3f38d490-8be2-4c8e-a9dd-7ca1f7ee15e6'
-  ReservedCode2: '3f38d490-8be2-4c8e-a9dd-7ca1f7ee15e6'
+  ProduceID: 'd3979118-8bee-482d-b4ee-9c921fe07775'
+  PropagateID: 'd3979118-8bee-482d-b4ee-9c921fe07775'
+  ReservedCode1: '97adc48f-62b2-47d5-89b1-04504a9a87c1'
+  ReservedCode2: '97adc48f-62b2-47d5-89b1-04504a9a87c1'
 ---
 
 # 更新日志
@@ -17,6 +17,30 @@ AIGC:
 - 修订号：Bug修复
 
 ---
+
+## v1.17.0 (2026-08-29)
+
+**QQ 多轮权限确认支持**（配合 openai-proxy v1.7.0 常驻全局确认监听器）。
+
+### 新增
+
+- **全局确认轮询线程（多轮确认支持）**
+  - 新增 `_poll_global_confirmations` 后台线程：每 5 秒轮询 8088 代理的 `/api/permission/pending`
+  - 发现带 `QQ|` 前缀 title 的新确认请求时，查活跃会话表反查推送地址并主动推送"请回复确认/拒绝"通知
+  - 支持 AI 确认后继续执行产生的**多轮确认**（不再受单次 SSE 连接生命周期限制）
+  - 推送失败不标记已处理，下轮自动重试
+- **活跃会话表持久化**
+  - 新增 `_qq_active_sessions` 内存表（TTL 30 分钟），QQ 消息到达时登记会话来源（from_user/is_group/group_openid）
+  - 并入 `qq_status.json` 持久化，重启后自动恢复（TTL 内有效），避免重启后历史确认因找不到推送目标被跳过
+- **确认去重改按 conf_id**
+  - 旧逻辑用 title 判断"本地已处理"，同一会话多轮确认 title 相同会误杀后续确认
+  - 修复：改为按 conf_id 判断（`_seen_global_conf_ids` + 本地待确认表 conf_id 双重去重）
+- **双通道去重（轮询推送 vs 请求内推送）**
+  - 同一确认可能被全局轮询线程和请求内 SSE 回调同时捕获
+  - 已推送过的 conf_id，请求内分支只登记本地待确认表供用户回复匹配，不再重复发通知
+- **轮询推送确认的回复处理**
+  - `_check_qq_confirmation` 支持无 message 对象的轮询推送场景，改用主动消息回复"已确认/已拒绝"
+- **`.gitignore` 增加 `qq_pending_confirmations.json`**（运行时数据不入库）
 
 ## v1.16.2 (2026-08-29)
 

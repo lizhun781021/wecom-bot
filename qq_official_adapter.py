@@ -33,6 +33,8 @@ import threading
 import traceback
 from pathlib import Path
 
+import requests  # noqa: E402
+
 # 允许从项目根目录导入 config / server
 PROJECT_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -102,6 +104,17 @@ _qq_pending_confirm_lock = threading.Lock()
 _QQ_PENDING_CONFIRM_TTL = 1800  # 30分钟未回复自动清理
 QQ_PENDING_CONFIRM_FILE = os.path.join(PROJECT_ROOT, "qq_pending_confirmations.json")
 _retry_thread_started = False
+
+# ========== QQ 活跃会话表（多轮确认支持） ==========
+# key: session_title (如 "QQ|私聊|李准|2026-08-20 07:46")
+# value: {from_user, is_group, group_openid, time}
+# 用于轮询到新确认请求时反查推送地址（AI 确认后继续执行产生的新确认）
+_qq_active_sessions = {}
+_qq_active_sessions_lock = threading.Lock()
+_QQ_ACTIVE_SESSION_TTL = 1800  # 30分钟未活跃自动清理
+_poll_conf_started = False     # 轮询线程只启动一次
+_seen_global_conf_ids = set()  # 已通知过的全局确认ID（去重）
+_seen_global_conf_lock = threading.Lock()
 
 
 def _persist_pending_confirmations():
@@ -187,6 +200,132 @@ def _pending_notice_retry_loop():
                     _persist_pending_confirmations()
         except Exception as e:
             logger.warning(f"[QQ] 待确认通知重试线程异常: {e}")
+
+
+def _poll_global_confirmations():
+    """后台线程：轮询 8088 代理的 /api/permission/pending，发现新的确认请求
+    即推送给对应 QQ 会话（支持多轮确认：AI 确认后继续执行产生的新确认）。
+
+    8088 常驻全局监听器（GlobalConfirmationListener）会把所有会话的
+    permission.asked / question.asked 登记到 pending 表（含 session_title），
+    本线程发现带 "QQ|" 前缀 title 的新确认时，查活跃会话表反查推送地址并通知。
+    """
+    proxy_base = config.TELEAGENT_PROXY_URL.rsplit("/v1/", 1)[0]  # http://127.0.0.1:8088
+    poll_url = proxy_base + "/api/permission/pending"
+    while True:
+        try:
+            time.sleep(5)
+            if not QQ_STATUS.get("connected"):
+                continue
+            _session = requests.Session()
+            _session.trust_env = False
+            resp = _session.get(poll_url, timeout=5)
+            if resp.status_code != 200:
+                continue
+            data = resp.json()
+            for item in data.get("pending", []):
+                conf_id = item.get("id", "")
+                if not conf_id:
+                    continue
+                with _seen_global_conf_lock:
+                    if conf_id in _seen_global_conf_ids:
+                        continue
+                title = item.get("title", "")
+                # 只处理 QQ 会话产生的确认（title 以 QQ| 开头）
+                if not title.startswith("QQ|"):
+                    with _seen_global_conf_lock:
+                        _seen_global_conf_ids.add(conf_id)
+                    continue
+                # 查活跃会话表，获取推送地址
+                with _qq_active_sessions_lock:
+                    active = _qq_active_sessions.get(title)
+                # 若不在活跃表，跳过（已处理过）
+                # 注意：不能用 title 判断本地已处理（同一会话会产生多轮确认，
+                # title 相同但 conf_id 不同，会误杀后续确认）。改为按 conf_id 判断。
+                if not active:
+                    with _seen_global_conf_lock:
+                        _seen_global_conf_ids.add(conf_id)
+                    continue
+                # 已在本会话推送过该 conf_id 才跳过（真正去重）
+                with _qq_pending_confirm_lock:
+                    same_conf = any(
+                        v.get("conf_id") == conf_id
+                        for v in _qq_pending_confirmations.values()
+                    )
+                if same_conf:
+                    with _seen_global_conf_lock:
+                        _seen_global_conf_ids.add(conf_id)
+                    continue
+                # 推送确认通知
+                conf_type = item.get("type", "permission")
+                desc = item.get("description", "")
+                if conf_type == "permission":
+                    notice = f"⚠️ 需要您确认操作\n\n{desc}\n\n请回复「确认」允许执行，或「拒绝」取消。"
+                else:
+                    notice = f"❓ 需要您选择\n\n{desc}\n\n请直接回复您的选择。"
+                # 推送确认通知
+                conf_type = item.get("type", "permission")
+                desc = item.get("description", "")
+                if conf_type == "permission":
+                    notice = f"⚠️ 需要您确认操作\n\n{desc}\n\n请回复「确认」允许执行，或「拒绝」取消。"
+                else:
+                    notice = f"❓ 需要您选择\n\n{desc}\n\n请直接回复您的选择。"
+                sent = _send_active_notice(active, notice)
+                if sent:
+                    # 登记到本地待确认表（供用户回复"确认/拒绝"匹配）
+                    with _qq_pending_confirm_lock:
+                        _qq_pending_confirmations[title] = {
+                            "conf_id": conf_id,
+                            "type": conf_type,
+                            "message": None,
+                            "from_user": active.get("from_user", ""),
+                            "session_title": title,
+                            "is_group": active.get("is_group", False),
+                            "group_openid": active.get("group_openid", ""),
+                            "notice_text": notice,
+                            "notice_sent": True,
+                            "retry_count": 0,
+                            "time": time.time(),
+                        }
+                    _persist_pending_confirmations()
+                    logger.info(f"[QQ权限确认] 多轮确认轮询推送成功: conf_id={conf_id} title={title}")
+                    with _seen_global_conf_lock:
+                        _seen_global_conf_ids.add(conf_id)
+                else:
+                    # 推送失败：不标记 seen，下轮重试（最多由外部 TTL 兜底）
+                    logger.warning(f"[QQ权限确认] 主动推送失败, 下轮重试: conf_id={conf_id} title={title}")
+        except Exception as e:
+            logger.warning(f"[QQ] 全局确认轮询线程异常: {e}")
+
+
+def _send_active_notice(active, notice_text):
+    """向活跃会话推送主动消息（私聊/群聊通用），返回是否成功"""
+    from_user = active.get("from_user", "")
+    is_group = active.get("is_group", False)
+    group_openid = active.get("group_openid", "")
+    if not from_user:
+        logger.warning("[QQ权限确认] 主动推送失败: 缺少 from_user")
+        return False
+    client = _QQ_CLIENT
+    if client is None or _QQ_LOOP is None:
+        logger.warning(f"[QQ权限确认] 主动推送失败: 客户端未就绪 (client={client is not None}, loop={_QQ_LOOP is not None})")
+        return False
+    try:
+        from botpy.http import Route
+        if is_group and group_openid:
+            route = Route("POST", "/v2/groups/{group_openid}/messages", group_openid=group_openid)
+            payload = {"msg_type": 0, "content": notice_text}
+        else:
+            route = Route("POST", "/v2/users/{openid}/messages", openid=from_user)
+            payload = {"msg_type": 0, "content": notice_text}
+        fut = asyncio.run_coroutine_threadsafe(
+            client.api._http.request(route, json=payload), _QQ_LOOP
+        )
+        fut.result(timeout=15)
+        return True
+    except Exception as e:
+        logger.warning(f"[QQ权限确认] 主动推送确认通知失败: {e}")
+        return False
 
 
 def get_pending_confirmations():
@@ -381,6 +520,7 @@ def _persist_status():
             },
             "last_group_msg": {k: dict(v) for k, v in QQ_LAST_GROUP_MSG.items()},
             "msg_seq_map": dict(_MSG_SEQ_MAP),
+            "active_sessions": {k: dict(v) for k, v in _qq_active_sessions.items()},
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         with open(QQ_STATUS_FILE, "w", encoding="utf-8") as f:
@@ -405,6 +545,21 @@ def _load_last_group_msg():
             seq_map = data.get("msg_seq_map") or {}
             if isinstance(seq_map, dict):
                 _MSG_SEQ_MAP = {k: int(v) for k, v in seq_map.items() if isinstance(v, (int, float, str))}
+            # 恢复活跃会话表（多轮确认轮询反查推送地址；重启后避免历史确认因找不到目标而丢失）
+            active = data.get("active_sessions") or {}
+            now = time.time()
+            if isinstance(active, dict):
+                with _qq_active_sessions_lock:
+                    for k, v in active.items():
+                        if isinstance(v, dict) and now - v.get("time", 0) <= _QQ_ACTIVE_SESSION_TTL:
+                            _qq_active_sessions[k] = {
+                                "from_user": v.get("from_user", ""),
+                                "is_group": v.get("is_group", False),
+                                "group_openid": v.get("group_openid", ""),
+                                "time": v.get("time", now),
+                            }
+                    if _qq_active_sessions:
+                        logger.info(f"[QQ] 启动恢复活跃会话 {len(_qq_active_sessions)} 条")
     except Exception as e:
         logger.warning(f"[QQ] 加载群最近 @ 消息失败（忽略）: {e}")
 
@@ -1320,10 +1475,25 @@ def _check_qq_confirmation(message, text_content, from_user, is_group, group_ope
         ok, detail = server.reply_teleagent_confirmation(conf_id, answers=[text])
 
     if ok:
-        _reply_text(message, f"已{'确认' if is_confirm else '拒绝'}，AI 正在继续处理...")
+        if message is not None:
+            _reply_text(message, f"已{'确认' if is_confirm else '拒绝'}，AI 正在继续处理...")
+        else:
+            # 轮询推送的无 message 对象，改用主动消息回复
+            _send_active_notice({
+                "from_user": from_user,
+                "is_group": is_group,
+                "group_openid": group_openid,
+            }, f"已{'确认' if is_confirm else '拒绝'}，AI 正在继续处理...")
         logger.info(f"[QQ权限确认] 用户{'确认' if is_confirm else '拒绝'}: conf_id={conf_id}")
     else:
-        _reply_text(message, f"确认回复失败：{detail}")
+        if message is not None:
+            _reply_text(message, f"确认回复失败：{detail}")
+        else:
+            _send_active_notice({
+                "from_user": from_user,
+                "is_group": is_group,
+                "group_openid": group_openid,
+            }, f"确认回复失败：{detail}")
         logger.error(f"[QQ权限确认] 回复失败: {detail}")
 
     return True
@@ -1404,6 +1574,16 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
 
         logger.info(f"[QQ] 调用TeleAgent: 来源={from_user} (显示={user_name}), 有文件={bool(file_paths)}")
 
+        # 记录活跃会话（供多轮确认轮询反查推送地址）
+        with _qq_active_sessions_lock:
+            _qq_active_sessions[session_title] = {
+                "from_user": from_user,
+                "is_group": is_group,
+                "group_openid": group_openid,
+                "time": time.time(),
+            }
+        _persist_status()  # 活跃会话登记即落盘，重启后多轮确认仍可反查推送地址
+
         # ====== 流式增量进度推送（QQ 不支持更新消息，用定时新消息模拟） ======
         # 注意：私聊被动回复通道同一 msg_id 只能发一条消息（msg_seq 固定 1），
         # 若发进度消息会占用被动通道，后续进度与最终回复全被 QQ 平台去重（40054005）。
@@ -1438,6 +1618,29 @@ def _handle_qq_message(message, from_user, text_content, file_paths, is_group: b
             conf_type = conf.get("type", "permission")
             conf_desc = conf.get("description", "")
             partial = result.get("partial_text", "")
+
+            # 双通道去重：该确认可能已被全局轮询线程推送过（_seen_global_conf_ids）
+            # 若已推送，这里只登记本地待确认表供用户回复匹配，不再重复发通知
+            with _seen_global_conf_lock:
+                already_pushed = conf_id in _seen_global_conf_ids
+            if already_pushed:
+                logger.info(f"[QQ权限确认] 确认已被轮询线程推送, 跳过重复通知: conf_id={conf_id}")
+                with _qq_pending_confirm_lock:
+                    _qq_pending_confirmations[session_title] = {
+                        "conf_id": conf_id,
+                        "type": conf_type,
+                        "message": None,
+                        "from_user": from_user,
+                        "session_title": session_title,
+                        "is_group": is_group,
+                        "group_openid": group_openid,
+                        "notice_text": conf_desc,
+                        "notice_sent": True,
+                        "retry_count": 0,
+                        "time": time.time(),
+                    }
+                _persist_pending_confirmations()
+                return
 
             if conf_type == "permission":
                 notice = f"⚠️ 需要您确认操作\n\n{conf_desc}\n\n请回复「确认」允许执行，或「拒绝」取消。"
@@ -2189,6 +2392,13 @@ def start_qq_bot():
             threading.Thread(target=_pending_notice_retry_loop, daemon=True).start()
             _retry_thread_started = True
             logger.info("[QQ] 待确认通知重试线程已启动")
+
+        # 启动多轮确认轮询线程（常驻监听器登记的全局确认 → 推送QQ）
+        global _poll_conf_started
+        if not _poll_conf_started:
+            threading.Thread(target=_poll_global_confirmations, daemon=True).start()
+            _poll_conf_started = True
+            logger.info("[QQ] 全局确认轮询线程已启动")
         client.run(appid=config.QQ_APPID, secret=config.QQ_SECRET)
     except Exception as e:
         _update_status(connected=False, last_error=str(e))
