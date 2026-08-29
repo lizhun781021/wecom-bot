@@ -622,7 +622,7 @@ def call_teleagent(prompt, timeout=1800, session_title=None, on_delta=None):
                 logger.info(f"[权限确认] 收到确认请求: id={confirmation.get('id')} "
                           f"type={confirmation.get('type')} "
                           f"desc={confirmation.get('description', '')[:80]}")
-                continue
+                break  # 收到 confirmation 后立即跳出，AI 在等权限确认不会发 [DONE]，继续等只会超时
             # 正常文本增量
             choices = chunk.get("choices", [])
             if choices:

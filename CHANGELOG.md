@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'b18a1c27-7d8f-42c5-a7da-2b69435e91c0'
-  PropagateID: 'b18a1c27-7d8f-42c5-a7da-2b69435e91c0'
-  ReservedCode1: 'c8d9dc77-1c81-4970-a361-f70630f80218'
-  ReservedCode2: 'c8d9dc77-1c81-4970-a361-f70630f80218'
+  ProduceID: 'e7f4e380-db6f-4b2c-ae37-b32ac7407822'
+  PropagateID: 'e7f4e380-db6f-4b2c-ae37-b32ac7407822'
+  ReservedCode1: '3f38d490-8be2-4c8e-a9dd-7ca1f7ee15e6'
+  ReservedCode2: '3f38d490-8be2-4c8e-a9dd-7ca1f7ee15e6'
 ---
 
 # 更新日志
@@ -17,6 +17,20 @@ AIGC:
 - 修订号：Bug修复
 
 ---
+
+## v1.16.2 (2026-08-29)
+
+**修复权限确认通知延迟10分钟送达**（Bug 3 — 根因修复）。
+
+### 问题
+`call_teleagent` 收到 confirmation chunk 后执行 `continue`，继续等待 `[DONE]`。但 AI 在等权限确认时永远不会发 `[DONE]`，导致要等 600 秒超时才返回 → QQ 适配器要等 10 分钟才能发出"请回复确认/拒绝"通知。
+
+### 修复
+- server.py `call_teleagent`：confirmation 收到后 `continue` → `break`，立即跳出循环返回，QQ 适配器秒级收到确认请求并发通知
+
+### 关联
+- 依赖 openai-proxy v1.6.2（confirmation chunk 字段正确解析）
+- 至此 QQ 权限确认链路三大 Bug 全部修复：v1.6.1 事件分发 / v1.6.2 字段解析 / v1.16.2 立即返回
 
 ## v1.16.1 (2026-08-29)
 
