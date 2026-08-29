@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '20640c43-2567-4ae1-ba99-86483df18db4'
-  PropagateID: '20640c43-2567-4ae1-ba99-86483df18db4'
-  ReservedCode1: '1a5bd8bb-e79a-48cd-b656-d8ebf2ec2035'
-  ReservedCode2: '1a5bd8bb-e79a-48cd-b656-d8ebf2ec2035'
+  ProduceID: 'b18a1c27-7d8f-42c5-a7da-2b69435e91c0'
+  PropagateID: 'b18a1c27-7d8f-42c5-a7da-2b69435e91c0'
+  ReservedCode1: 'c8d9dc77-1c81-4970-a361-f70630f80218'
+  ReservedCode2: 'c8d9dc77-1c81-4970-a361-f70630f80218'
 ---
 
 # 更新日志
@@ -17,6 +17,18 @@ AIGC:
 - 修订号：Bug修复
 
 ---
+
+## v1.16.1 (2026-08-29)
+
+**权限确认日志格式优化**（配合 openai-proxy v1.6.2 根因修复）。
+
+### 变更
+- server.py 权限确认日志格式优化：增加 type 和 desc 字段，便于排查
+- 清理临时 debug 日志，保留正式版 info 日志
+
+### 关联
+- 配合 openai-proxy v1.6.2：修复 permission.asked 事件的 ID 字段名（`id` 而非 `permissionID`）、description 自动拼装、tool dict 转 string 的根因
+- 至此权限确认全链路打通：super-agent SSE → 8088 代理 StreamingSSEListener → confirmation chunk 注入 → server.py 解析 → QQ/企微/量子密信通知用户
 
 ## v1.16.0 (2026-08-29)
 
